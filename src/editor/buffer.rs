@@ -483,11 +483,8 @@ impl Buffer {
         for mut c in cursors {
             let (line, _) = self.pos_to_line_col(c.head);
             let start = self.rope.line_to_char(line);
-            let end = if line + 1 < self.rope.len_lines() {
-                self.rope.line_to_char(line + 1)
-            } else {
-                self.rope.len_chars()
-            };
+            // Select the line content only — exclude the trailing newline.
+            let end = start + self.line_len_chars(line);
             c.anchor = start;
             c.head = end;
             c.goal_col = None;
@@ -522,18 +519,16 @@ impl Buffer {
         self.normalize();
     }
 
-    /// Add a cursor selecting the next occurrence of the current selection (or
-    /// the word under the primary cursor if there is no selection yet).
+    /// Sublime-style "add next occurrence": the first press (no selection) just
+    /// selects the word under the cursor; each subsequent press adds a cursor
+    /// selecting the next occurrence of that text.
     pub fn add_cursor_next_match(&mut self, case_sensitive: bool) {
         let needle = match self.primary_selection_text() {
             Some(s) if !s.is_empty() => s,
             _ => {
-                // Select the word under the primary cursor first.
-                if self.select_word_under_primary() {
-                    self.primary_selection_text().unwrap_or_default()
-                } else {
-                    return;
-                }
+                // First press: select the word under the cursor and stop.
+                self.select_word_under_primary();
+                return;
             }
         };
         if needle.is_empty() {
@@ -927,6 +922,31 @@ mod tests {
         b.move_vertical(1, false); // line 2 "world" -> goal col 4 restored
         let (l, c) = b.pos_to_line_col(b.cursors[0].head);
         assert_eq!((l, c), (2, 4));
+    }
+
+    #[test]
+    fn select_line_excludes_newline() {
+        let mut b = buf("aa\nbb\ncc");
+        b.cursors = vec![Cursor::new(4)]; // on line "bb"
+        b.select_line();
+        assert_eq!(b.cursors.len(), 1);
+        assert_eq!(b.cursors[0].range(), (3, 5)); // "bb", not the trailing \n
+    }
+
+    #[test]
+    fn add_cursor_next_match_selects_word_then_occurrences() {
+        let mut b = buf("foo bar foo baz foo");
+        b.cursors = vec![Cursor::new(1)]; // inside the first "foo"
+        // First press: just select the word under the cursor.
+        b.add_cursor_next_match(false);
+        assert_eq!(b.cursors.len(), 1);
+        assert_eq!(b.cursors[0].range(), (0, 3));
+        // Each subsequent press adds the next occurrence.
+        b.add_cursor_next_match(false);
+        assert_eq!(b.cursors.len(), 2);
+        b.add_cursor_next_match(false);
+        assert_eq!(b.cursors.len(), 3);
+        assert!(b.cursors.iter().all(|c| c.range().1 - c.range().0 == 3));
     }
 
     #[test]

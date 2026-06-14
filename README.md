@@ -53,7 +53,8 @@ point is a fast, fuzzy command palette:
 | `Ctrl+Q` | quit | `Ctrl+H` | replace (`from\|to`) |
 | `Ctrl+Z` / `Ctrl+Y` | undo / redo | `Ctrl+D` | add cursor at next match |
 | `Ctrl+B` / `Ctrl+I` | bold / italic | `Alt+↑` / `Alt+↓` | add cursor above / below |
-| `Ctrl+A` | select all | `Ctrl+L` | select all matches |
+| `Ctrl+A` | select all | `Ctrl+L` | select line |
+| `Ctrl+D` | select word / add next occurrence | `Alt+F3` | select all occurrences |
 | `Ctrl+/` | toggle comment | `Esc` | clear extra cursors |
 | `Ctrl+O` | open file | `Ctrl+End` / `Ctrl+Home` | end / start of file |
 
