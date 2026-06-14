@@ -1,0 +1,222 @@
+//! Draws the full editor frame into the [`Screen`] back buffer. Only the
+//! viewport's lines are processed (and over-long lines skip highlighting), so
+//! rendering cost is bound to what's on screen rather than file size.
+
+use super::screen::{Cell, Screen};
+use super::{layout::Layout, statusbar};
+use crate::app::App;
+use crate::plugins::PluginView;
+use crate::syntax::{highlighter_for, LineState, StyleKind};
+use crossterm::style::Color;
+use std::io::Write;
+
+const SEARCH_BG: Color = Color::Rgb { r: 0x5a, g: 0x4a, b: 0x10 };
+const MAX_HIGHLIGHT_LINE: usize = 2000;
+
+pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::Result<()> {
+    let theme = &app.config.theme;
+    let settings = &app.config.settings;
+    screen.begin(app.width, app.height, theme.foreground, theme.background);
+
+    let buf = app.active_buffer();
+    let layout = Layout::compute(app.width, app.height, buf.len_lines(), settings.line_numbers);
+    let (cur_line, _) = buf.pos_to_line_col(buf.primary_cursor().head);
+
+    let highlighter = highlighter_for(buf.language);
+    let mut state = LineState::default();
+    let text_width = layout.text_width() as usize;
+
+    // --- text area ---------------------------------------------------------
+    for row in 0..layout.text_rows {
+        let ln = app.top_line + row as usize;
+        let y = row;
+        if ln >= buf.len_lines() {
+            // Tilde marker for lines past EOF (familiar, low-noise).
+            if layout.gutter > 0 {
+                screen.put_str(0, y, "~", theme.line_number, theme.background, false, false);
+            }
+            continue;
+        }
+
+        draw_gutter(screen, &layout, app, ln, cur_line, y);
+
+        let line_start = buf.rope.line_to_char(ln);
+        let line_len = buf.line_len_chars(ln);
+        let text: String = buf.rope.slice(line_start..line_start + line_len).to_string();
+
+        // Per-column style arrays.
+        let mut kinds = vec![StyleKind::Default; line_len];
+        let mut bolds = vec![false; line_len];
+        let mut itals = vec![false; line_len];
+        if settings.syntax_highlighting && line_len <= MAX_HIGHLIGHT_LINE {
+            for s in highlighter.highlight_line(&text, &mut state) {
+                for c in s.start..s.end.min(line_len) {
+                    kinds[c] = s.kind;
+                    bolds[c] = s.bold;
+                    itals[c] = s.italic;
+                }
+            }
+        }
+
+        // Matches overlapping this line (filtered once).
+        let line_end = line_start + line_len;
+        let line_matches: Vec<(usize, usize)> = app
+            .search
+            .matches
+            .iter()
+            .filter(|(s, e)| *s < line_end && *e > line_start)
+            .copied()
+            .collect();
+
+        let chars: Vec<char> = text.chars().collect();
+        for vcol in 0..text_width {
+            let col = app.left_col + vcol;
+            if col >= line_len {
+                break;
+            }
+            let x = layout.text_x() + vcol as u16;
+            let idx = line_start + col;
+            let ch = chars[col];
+
+            let mut fg = theme.color_for(kinds[col]);
+            let mut bg = theme.background;
+
+            let is_ws = ch == ' ' || ch == '\t';
+            let disp = match ch {
+                '\t' if settings.show_whitespace => '→',
+                ' ' if settings.show_whitespace => '·',
+                c if c.is_control() => ' ',
+                c => c,
+            };
+            if settings.show_whitespace && is_ws {
+                fg = theme.whitespace;
+            }
+
+            if is_in_match(idx, &line_matches) {
+                bg = SEARCH_BG;
+            }
+            if buf.cursors.iter().any(|c| {
+                let (s, e) = c.range();
+                s != e && idx >= s && idx < e
+            }) {
+                bg = theme.selection;
+            }
+
+            screen.set(x, y, Cell { ch: disp, fg, bg, bold: bolds[col], italic: itals[col] });
+        }
+    }
+
+    // --- cursors (drawn over text) ----------------------------------------
+    let mut primary_screen_pos = None;
+    for (i, c) in buf.cursors.iter().enumerate() {
+        let (cl, cc) = buf.pos_to_line_col(c.head);
+        if cl < app.top_line || cl >= app.top_line + layout.text_rows as usize {
+            continue;
+        }
+        if cc < app.left_col || cc >= app.left_col + text_width {
+            continue;
+        }
+        let x = layout.text_x() + (cc - app.left_col) as u16;
+        let y = (cl - app.top_line) as u16;
+        if i == buf.primary {
+            primary_screen_pos = Some((x, y));
+        } else {
+            // Render extra cursors as reverse-video blocks.
+            let ls = buf.rope.line_to_char(cl);
+            let llen = buf.line_len_chars(cl);
+            let ch = if cc < llen { buf.rope.char(ls + cc) } else { ' ' };
+            screen.set(x, y, Cell { ch, fg: theme.background, bg: theme.cursor, bold: false, italic: false });
+        }
+    }
+
+    // --- status bar --------------------------------------------------------
+    draw_status_bar(screen, app, &layout);
+
+    // --- command line / message -------------------------------------------
+    let command_cursor = draw_command_line(screen, app, &layout);
+
+    // --- final cursor position --------------------------------------------
+    screen.cursor = if app.command.active {
+        command_cursor
+    } else {
+        primary_screen_pos
+    };
+
+    screen.flush(out)
+}
+
+fn draw_gutter(screen: &mut Screen, layout: &Layout, app: &App, ln: usize, cur_line: usize, y: u16) {
+    if layout.gutter == 0 {
+        return;
+    }
+    let settings = &app.config.settings;
+    let theme = &app.config.theme;
+    let is_current = ln == cur_line;
+    let num = if settings.relative_line_numbers && !is_current {
+        ln.abs_diff(cur_line)
+    } else {
+        ln + 1
+    };
+    let width = (layout.gutter - 1) as usize;
+    let s = format!("{num:>width$} ");
+    let fg = if is_current { theme.line_number_current } else { theme.line_number };
+    screen.put_str(0, y, &s, fg, theme.background, is_current, false);
+}
+
+fn draw_status_bar(screen: &mut Screen, app: &App, layout: &Layout) {
+    let theme = &app.config.theme;
+    let buf = app.active_buffer();
+    let y = layout.status_row;
+    // Background fill.
+    for x in 0..layout.width {
+        screen.set(x, y, Cell { ch: ' ', fg: theme.statusbar_fg, bg: theme.statusbar_bg, bold: false, italic: false });
+    }
+
+    let left = statusbar::left_text(app.mode, buf);
+    screen.put_str(0, y, &left, theme.statusbar_fg, theme.statusbar_bg, true, false);
+
+    // Plugin status segments.
+    let c = buf.primary_cursor();
+    let (cl, cc) = buf.pos_to_line_col(c.head);
+    let view = PluginView {
+        rope: &buf.rope,
+        cursor_line: cl,
+        cursor_col: cc,
+        selection: if c.has_selection() { Some(c.range()) } else { None },
+        language: buf.language.display_name(),
+        path: buf.path.as_deref(),
+    };
+    let segments = app.plugins.status_segments(&view);
+    let right = statusbar::right_text(buf, &segments, app.active, app.buffers.len());
+
+    let right_len = right.chars().count() as u16;
+    if right_len < layout.width {
+        let start_x = layout.width - right_len;
+        screen.put_str(start_x, y, &right, theme.statusbar_fg, theme.statusbar_bg, false, false);
+    }
+}
+
+/// Returns the desired terminal cursor position when a prompt is active.
+fn draw_command_line(screen: &mut Screen, app: &App, layout: &Layout) -> Option<(u16, u16)> {
+    let theme = &app.config.theme;
+    let y = layout.command_row;
+    for x in 0..layout.width {
+        screen.set(x, y, Cell { ch: ' ', fg: theme.foreground, bg: theme.background, bold: false, italic: false });
+    }
+
+    if app.command.active {
+        let label = app.command.label();
+        let x = screen.put_str(0, y, label, theme.line_number_current, theme.background, false, false);
+        let end = screen.put_str(x, y, &app.command.input, theme.foreground, theme.background, false, false);
+        Some((end.min(layout.width.saturating_sub(1)), y))
+    } else {
+        if !app.status_message.is_empty() {
+            screen.put_str(0, y, &app.status_message, theme.comment, theme.background, false, false);
+        }
+        None
+    }
+}
+
+fn is_in_match(idx: usize, matches: &[(usize, usize)]) -> bool {
+    matches.iter().any(|(s, e)| idx >= *s && idx < *e)
+}
