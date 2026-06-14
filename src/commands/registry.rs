@@ -2,7 +2,7 @@
 //! plugins) to [`Command`] values. Keeping the parsing in one place means the
 //! keymap, command line and plugin API all speak the same language.
 
-use super::{Command, Mode};
+use super::Command;
 use std::path::PathBuf;
 
 /// Parse a command name (optionally with arguments) into a [`Command`].
@@ -22,7 +22,7 @@ pub fn parse(input: &str) -> Option<Command> {
         "open" | "e" | "edit" => Command::OpenFile(PathBuf::from(rest)),
         "quit" | "q" => Command::Quit,
         "force_quit" | "q!" => Command::ForceQuit,
-        "wq" => Command::Save, // App treats save then quit specially via command line
+        "save_quit" | "wq" => Command::SaveAndQuit,
 
         "undo" => Command::Undo,
         "redo" => Command::Redo,
@@ -65,23 +65,22 @@ pub fn parse(input: &str) -> Option<Command> {
         "find" => Command::Find,
         "find_next" => Command::FindNext,
         "find_prev" => Command::FindPrev,
-        "replace" => {
-            let (from, to) = rest.split_once(' ')?;
-            Command::Replace { from: from.to_string(), to: to.to_string() }
-        }
-        "replace_all" => {
-            let (from, to) = rest.split_once(' ')?;
-            Command::ReplaceAll { from: from.to_string(), to: to.to_string() }
-        }
+        // Bare `replace`/`replace_all` (no args) open the interactive prompt;
+        // with args they run directly. Empty `from` signals "open prompt".
+        "replace" => match rest.split_once(' ') {
+            Some((from, to)) => Command::Replace { from: from.to_string(), to: to.to_string() },
+            None => Command::Replace { from: String::new(), to: String::new() },
+        },
+        "replace_all" => match rest.split_once(' ') {
+            Some((from, to)) => Command::ReplaceAll { from: from.to_string(), to: to.to_string() },
+            None => Command::ReplaceAll { from: String::new(), to: String::new() },
+        },
 
         "next_buffer" => Command::NextBuffer,
         "prev_buffer" => Command::PrevBuffer,
         "close_buffer" => Command::CloseBuffer,
 
-        "normal_mode" => Command::EnterMode(Mode::Normal),
-        "insert_mode" => Command::EnterMode(Mode::Insert),
-        "select_mode" => Command::EnterMode(Mode::Select),
-        "command_mode" => Command::EnterCommandLine,
+        "command_palette" => Command::CommandPalette,
 
         _ => return None,
     };

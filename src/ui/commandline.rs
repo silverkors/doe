@@ -2,13 +2,14 @@
 //! prompt label and the user's input; otherwise it shows the latest transient
 //! status message.
 
-/// What kind of input the command line is currently collecting.
+/// What kind of input the command line is currently collecting. These are the
+/// free-text prompts; discrete actions go through the command palette instead.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PromptKind {
-    /// `:` ex-style command.
-    Command,
     /// Incremental find.
     Find,
+    /// Replace, entered as `from|to`.
+    Replace,
     /// Save under a new path.
     SaveAs,
     /// Open a file by path.
@@ -18,8 +19,8 @@ pub enum PromptKind {
 impl PromptKind {
     pub fn label(&self) -> &'static str {
         match self {
-            PromptKind::Command => ":",
             PromptKind::Find => "find: ",
+            PromptKind::Replace => "replace (from|to): ",
             PromptKind::SaveAs => "save as: ",
             PromptKind::Open => "open: ",
         }

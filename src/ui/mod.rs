@@ -3,6 +3,7 @@
 
 pub mod commandline;
 pub mod layout;
+pub mod palette;
 pub mod renderer;
 pub mod screen;
 pub mod statusbar;

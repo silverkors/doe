@@ -3,7 +3,8 @@
 //! command registry) and everything flows through [`App::execute`] — the single
 //! command layer that keybindings, the command line, mouse and plugins share.
 
-use crate::commands::{registry, Command, Mode};
+use crate::commands::palette::Palette;
+use crate::commands::{registry, Command, BINDING_CONTEXT};
 use crate::config::Config;
 use crate::editor::Buffer;
 use crate::files;
@@ -22,8 +23,8 @@ pub struct App {
     pub active: usize,
     pub top_line: usize,
     pub left_col: usize,
-    pub mode: Mode,
     pub command: CommandLine,
+    pub palette: Palette,
     pub search: SearchState,
     pub status_message: String,
     pub plugins: PluginRegistry,
@@ -34,7 +35,6 @@ pub struct App {
     /// from the lines above the viewport so highlighting stays correct when the
     /// opening fence has scrolled off the top.
     pub top_in_code_block: bool,
-    prev_mode: Mode,
     quit_confirm: bool,
     disk_warned: bool,
 }
@@ -51,15 +51,15 @@ impl App {
         if buffers.is_empty() {
             buffers.push(Buffer::empty());
         }
-        let mode = if config.settings.start_in_insert { Mode::Insert } else { Mode::Normal };
+        let palette = Palette::new(&config.config_dir);
         let mut app = App {
             config,
             buffers,
             active: 0,
             top_line: 0,
             left_col: 0,
-            mode,
             command: CommandLine::default(),
+            palette,
             search: SearchState::default(),
             status_message: String::new(),
             plugins: PluginRegistry::with_builtins(),
@@ -67,7 +67,6 @@ impl App {
             height: 24,
             should_quit: false,
             top_in_code_block: false,
-            prev_mode: mode,
             quit_confirm: false,
             disk_warned: false,
         };
@@ -124,7 +123,7 @@ impl App {
 
     fn set_status_hint(&mut self) {
         self.status_message =
-            "Ctrl+S save · Ctrl+Q quit · Ctrl+F find · Ctrl+D multi-cursor · : command".to_string();
+            "Ctrl+P commands · Ctrl+S save · Ctrl+F find · Ctrl+D multi-cursor".to_string();
     }
 
     fn set_status(&mut self, msg: impl Into<String>) {
@@ -167,6 +166,10 @@ impl App {
     // --- input -------------------------------------------------------------
 
     pub fn handle_key(&mut self, ev: KeyEvent) {
+        if self.palette.open {
+            self.handle_palette_key(ev);
+            return;
+        }
         if self.command.active {
             self.handle_command_key(ev);
             return;
@@ -175,33 +178,33 @@ impl App {
         self.status_message.clear();
 
         let chord = keymap::chord_string(&ev);
-        let cmd = chord.as_deref().and_then(|c| self.resolve_chord(c));
+        let name = chord
+            .as_deref()
+            .and_then(|c| self.config.keybindings.get(BINDING_CONTEXT, c))
+            .map(|s| s.to_string());
 
-        match cmd {
-            Some(command) => {
-                let is_quit = matches!(command, Command::Quit);
-                if !is_quit {
-                    self.quit_confirm = false;
-                }
-                self.execute(command);
-            }
+        match name {
+            Some(name) => self.run_named(&name),
             None => {
-                // Unbound printable char inserts in insert/select mode.
-                if matches!(self.mode, Mode::Insert | Mode::Select) {
-                    if let Some(ch) = keymap::printable_char(&ev) {
-                        self.quit_confirm = false;
-                        self.execute(Command::InsertChar(ch));
-                    }
+                // DOE is modeless: any unbound printable char inserts.
+                if let Some(ch) = keymap::printable_char(&ev) {
+                    self.quit_confirm = false;
+                    self.execute(Command::InsertChar(ch));
                 }
             }
         }
     }
 
-    /// Resolve a chord to a command via keybindings, then the command registry,
-    /// honouring plugin-provided command aliases.
-    fn resolve_chord(&self, chord: &str) -> Option<Command> {
-        let name = self.config.keybindings.get(self.mode.config_key(), chord)?;
-        self.resolve_command_name(name)
+    /// Run a command by name (from a keybinding or the palette): record usage,
+    /// resolve via the registry/plugin aliases, and execute.
+    fn run_named(&mut self, name: &str) {
+        self.palette.record_use(name);
+        if let Some(cmd) = self.resolve_command_name(name) {
+            if !matches!(cmd, Command::Quit) {
+                self.quit_confirm = false;
+            }
+            self.execute(cmd);
+        }
     }
 
     fn resolve_command_name(&self, name: &str) -> Option<Command> {
@@ -213,12 +216,40 @@ impl App {
         registry::parse(resolved)
     }
 
+    /// Key handling while the command palette is open.
+    fn handle_palette_key(&mut self, ev: KeyEvent) {
+        use crossterm::event::KeyCode::*;
+        match ev.code {
+            Esc => self.palette.close(),
+            Enter => {
+                if let Some(name) = self.palette.selected_command() {
+                    let name = name.to_string();
+                    self.palette.close();
+                    self.status_message.clear();
+                    self.run_named(&name);
+                } else {
+                    self.palette.close();
+                }
+            }
+            Up | BackTab => self.palette.move_selection(-1),
+            Down | Tab => self.palette.move_selection(1),
+            Backspace => {
+                self.palette.query.pop();
+                self.palette.update();
+            }
+            Char(c) if !ev.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.palette.query.push(c);
+                self.palette.update();
+            }
+            _ => {}
+        }
+    }
+
     fn handle_command_key(&mut self, ev: KeyEvent) {
         use crossterm::event::KeyCode::*;
         match ev.code {
             Esc => {
                 self.command.close();
-                self.mode = self.prev_mode;
                 self.search.matches.clear();
             }
             Enter => {
@@ -248,8 +279,6 @@ impl App {
     }
 
     fn open_prompt(&mut self, kind: PromptKind, prefill: &str) {
-        self.prev_mode = self.mode;
-        self.mode = Mode::Command;
         self.command.open(kind, prefill);
     }
 
@@ -257,10 +286,8 @@ impl App {
         let kind = self.command.kind.clone();
         let input = self.command.input.trim().to_string();
         self.command.close();
-        self.mode = self.prev_mode;
 
         match kind {
-            Some(PromptKind::Command) => self.run_ex_command(&input),
             Some(PromptKind::Find) => {
                 self.search.query = input.clone();
                 self.search.case_sensitive = input.chars().any(|c| c.is_uppercase());
@@ -274,6 +301,17 @@ impl App {
                     self.set_status(format!("{n} matches"));
                 }
             }
+            Some(PromptKind::Replace) => {
+                let (from, to) = match input.split_once('|') {
+                    Some((f, t)) => (f.to_string(), t.to_string()),
+                    None => (input.clone(), String::new()),
+                };
+                if from.is_empty() {
+                    self.set_status("replace: nothing to find");
+                } else {
+                    self.do_replace(&from, &to, true);
+                }
+            }
             Some(PromptKind::SaveAs) => {
                 self.execute(Command::SaveAs(files::expand_path(&input)));
             }
@@ -281,30 +319,6 @@ impl App {
                 self.execute(Command::OpenFile(files::expand_path(&input)));
             }
             None => {}
-        }
-    }
-
-    /// Handle `:`-style ex commands, including a few multi-word forms.
-    fn run_ex_command(&mut self, input: &str) {
-        if input.is_empty() {
-            return;
-        }
-        self.plugins.dispatch(&Event::Command(input.to_string()));
-        match input {
-            "wq" | "x" => {
-                self.execute(Command::Save);
-                self.execute(Command::Quit);
-                return;
-            }
-            "q!" => {
-                self.execute(Command::ForceQuit);
-                return;
-            }
-            _ => {}
-        }
-        match self.resolve_command_name(input) {
-            Some(cmd) => self.execute(cmd),
-            None => self.set_status(format!("unknown command: {input}")),
         }
     }
 
@@ -379,15 +393,21 @@ impl App {
             Command::Quit => {
                 if self.any_modified() && !self.quit_confirm {
                     self.quit_confirm = true;
-                    self.set_status("Unsaved changes! Press quit again, or :q! to discard.");
+                    self.set_status(
+                        "Unsaved changes! Press Ctrl+Q again, or pick \"Quit Without Saving\".",
+                    );
                 } else {
-                    self.plugins.dispatch(&Event::Exit);
-                    self.should_quit = true;
+                    self.shutdown();
                 }
             }
-            Command::ForceQuit => {
-                self.plugins.dispatch(&Event::Exit);
-                self.should_quit = true;
+            Command::ForceQuit => self.shutdown(),
+            Command::SaveAndQuit => {
+                if self.active_buffer().path.is_some() {
+                    self.do_save();
+                    self.shutdown();
+                } else {
+                    self.open_prompt(PromptKind::SaveAs, "");
+                }
             }
 
             // Editing
@@ -494,7 +514,7 @@ impl App {
             Command::FindPrev => self.find_step(false),
             Command::Replace { from, to } => {
                 if from.is_empty() {
-                    self.open_prompt(PromptKind::Command, "replace_all  ");
+                    self.open_prompt(PromptKind::Replace, "");
                 } else {
                     self.do_replace(&from, &to, false);
                     edited = true;
@@ -502,7 +522,7 @@ impl App {
             }
             Command::ReplaceAll { from, to } => {
                 if from.is_empty() {
-                    self.open_prompt(PromptKind::Command, "replace_all  ");
+                    self.open_prompt(PromptKind::Replace, "");
                 } else {
                     self.do_replace(&from, &to, true);
                     edited = true;
@@ -514,9 +534,8 @@ impl App {
             Command::PrevBuffer => self.switch_buffer(-1),
             Command::CloseBuffer => self.close_buffer(),
 
-            // Modes
-            Command::EnterMode(m) => self.mode = m,
-            Command::EnterCommandLine => self.open_prompt(PromptKind::Command, ""),
+            // Command palette
+            Command::CommandPalette => self.palette.open(),
 
             Command::NoOp => {}
         }
@@ -542,6 +561,13 @@ impl App {
 
     fn any_modified(&self) -> bool {
         self.buffers.iter().any(|b| b.modified)
+    }
+
+    /// Persist palette usage, notify plugins, and request exit.
+    fn shutdown(&mut self) {
+        self.palette.save();
+        self.plugins.dispatch(&Event::Exit);
+        self.should_quit = true;
     }
 
     fn do_save(&mut self) {

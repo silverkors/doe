@@ -2,40 +2,14 @@
 //! [`Command`]. Keybindings, the command line, mouse actions and (future)
 //! plugins all funnel through this single layer.
 
+pub mod palette;
 pub mod registry;
 
 use std::path::PathBuf;
 
-/// Editor modes. The structure is intentionally generic so Vim-like behaviour
-/// can be layered on later without reworking the input pipeline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Mode {
-    Normal,
-    Insert,
-    Select,
-    Command,
-}
-
-impl Mode {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Mode::Normal => "NORMAL",
-            Mode::Insert => "INSERT",
-            Mode::Select => "SELECT",
-            Mode::Command => "COMMAND",
-        }
-    }
-
-    /// The TOML keybinding section name for this mode.
-    pub fn config_key(&self) -> &'static str {
-        match self {
-            Mode::Normal => "normal",
-            Mode::Insert => "insert",
-            Mode::Select => "select",
-            Mode::Command => "command",
-        }
-    }
-}
+/// The single keybinding context. DOE is modeless (always editing); this name
+/// is the section used in `[keybindings.global]`.
+pub const BINDING_CONTEXT: &str = "global";
 
 /// Every action the editor can perform. Adding a feature means adding a
 /// variant here and handling it in `App::execute`.
@@ -47,6 +21,7 @@ pub enum Command {
     OpenFile(PathBuf),
     Quit,
     ForceQuit,
+    SaveAndQuit,
 
     // Editing
     InsertChar(char),
@@ -104,9 +79,8 @@ pub enum Command {
     PrevBuffer,
     CloseBuffer,
 
-    // Modes
-    EnterMode(Mode),
-    EnterCommandLine,
+    // Command palette (Spotlight-style action launcher)
+    CommandPalette,
 
     // Misc
     #[allow(dead_code)]

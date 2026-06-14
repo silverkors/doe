@@ -32,32 +32,39 @@ doe a.md b.rs c.toml   # open several files as buffers
 - **Plugin system** — internal API (events, buffer view, status segments,
   command aliases) designed to back sandboxed WASM plugins later.
 
-## Modes
+## Command palette (Spotlight-style)
 
-`insert` (default, modern modeless feel), `normal`, `select`, `command`.
-`Esc` clears extra cursors / leaves prompts. The structure supports building
-Vim-like behaviour later without reworking input.
+DOE is **modeless** — you're always editing, no Vim modes. The command entry
+point is a fast, fuzzy command palette:
+
+- `Ctrl+P` opens it; type to fuzzy-filter actions, `↑/↓` to move, `Enter` to
+  run, `Esc` to close.
+- With an empty query it surfaces the actions you use most. Usage counts are
+  persisted (`~/.config/doe/usage.toml`), so your common actions stay on top.
+- *(Planned: context-aware ranking — guessing the next action from what you're
+  doing.)*
 
 ## Key bindings (defaults)
 
 | Key | Action | Key | Action |
 |-----|--------|-----|--------|
-| `Ctrl+S` | save | `Ctrl+F` | find |
-| `Ctrl+Q` | quit | `F3` / `Shift+F3` | find next / prev |
+| `Ctrl+P` | command palette | `Ctrl+F` | find |
+| `Ctrl+S` | save | `F3` / `Shift+F3` | find next / prev |
+| `Ctrl+Q` | quit | `Ctrl+H` | replace (`from\|to`) |
 | `Ctrl+Z` / `Ctrl+Y` | undo / redo | `Ctrl+D` | add cursor at next match |
 | `Ctrl+B` / `Ctrl+I` | bold / italic | `Alt+↑` / `Alt+↓` | add cursor above / below |
 | `Ctrl+A` | select all | `Ctrl+L` | select all matches |
 | `Ctrl+/` | toggle comment | `Esc` | clear extra cursors |
-| `Ctrl+O` | open file | `:` | command line |
+| `Ctrl+O` | open file | `Ctrl+End` / `Ctrl+Home` | end / start of file |
 
-`:` commands: `:w` `:q` `:q!` `:wq` `:e <path>` `:save_as <path>`
-`:replace_all <from> <to>`.
+Everything else lives in the palette.
 
 ## Configuration
 
 `~/.config/doe/config.toml` (created on first run), themes in
-`~/.config/doe/themes/<name>.toml`. Keybindings are merged over the built-in
-defaults, so you only specify what you want to change:
+`~/.config/doe/themes/<name>.toml`. DOE is modeless, so there is a single
+`[keybindings.global]` context; bindings are merged over the built-in
+defaults, so you only specify overrides:
 
 ```toml
 theme = "default-dark"
@@ -66,7 +73,8 @@ tab_width = 4
 insert_spaces = true
 trim_trailing_whitespace_on_save = false
 
-[keybindings.normal]
+[keybindings.global]
+"ctrl-p" = "command_palette"
 "ctrl-d" = "add_cursor_next_match"
 "alt-up" = "add_cursor_above"
 ```
@@ -77,11 +85,11 @@ trim_trailing_whitespace_on_save = false
 src/
   main.rs        terminal setup + event loop
   app.rs         editor state + central command execution
-  commands/      Command enum + name registry (one command layer for all input)
+  commands/      Command enum, name registry, command palette (catalog+fuzzy)
   config/        settings, keybindings, themes
   editor/        rope buffer, cursors, selections, undo
   syntax/        language detection, markdown + code highlighters
-  ui/            diffing screen, renderer, status bar, command line, layout
+  ui/            diffing screen, renderer, status bar, command line, palette
   input/         key-chord normalization, mouse layout
   search/        find / replace
   plugins/       plugin API, registry, built-ins
@@ -103,6 +111,7 @@ Written without `unsafe` Rust.
 
 ## Roadmap
 
-- **0.2:** richer multi-cursor word/line motions, bracket matching, theme picker.
-- **0.3:** tree-sitter highlighting, WASM sandboxed plugins, command palette,
-  file picker, project view, Git status, autosave/recovery.
+- **0.2 (in progress):** modeless editing + command palette ✓; remaining:
+  bracket matching, file picker via the palette, context-aware palette ranking.
+- **0.3:** tree-sitter highlighting, WASM sandboxed plugins, project view,
+  Git status, autosave/recovery.

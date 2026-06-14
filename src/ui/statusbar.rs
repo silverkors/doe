@@ -1,13 +1,12 @@
 //! Status bar text construction. Pure string formatting; the renderer paints
 //! the result with theme colours.
 
-use crate::commands::Mode;
 use crate::editor::Buffer;
 
-/// Left segment: mode, file name and modified marker.
-pub fn left_text(mode: Mode, buffer: &Buffer) -> String {
+/// Left segment: file name and modified marker (DOE is modeless — no mode word).
+pub fn left_text(buffer: &Buffer) -> String {
     let modified = if buffer.modified { " ●" } else { "" };
-    format!(" {} │ {}{}", mode.as_str(), buffer.name(), modified)
+    format!(" {}{}", buffer.name(), modified)
 }
 
 /// Right segment: language, cursor position, selection/cursor counts, plus any

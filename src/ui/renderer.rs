@@ -137,8 +137,17 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     // --- command line / message -------------------------------------------
     let command_cursor = draw_command_line(screen, app, &layout);
 
+    // --- command palette overlay (drawn on top of everything) -------------
+    let palette_cursor = if app.palette.open {
+        super::palette::render(screen, app)
+    } else {
+        None
+    };
+
     // --- final cursor position --------------------------------------------
-    screen.cursor = if app.command.active {
+    screen.cursor = if app.palette.open {
+        palette_cursor
+    } else if app.command.active {
         command_cursor
     } else {
         primary_screen_pos
@@ -174,7 +183,7 @@ fn draw_status_bar(screen: &mut Screen, app: &App, layout: &Layout) {
         screen.set(x, y, Cell { ch: ' ', fg: theme.statusbar_fg, bg: theme.statusbar_bg, bold: false, italic: false });
     }
 
-    let left = statusbar::left_text(app.mode, buf);
+    let left = statusbar::left_text(buf);
     screen.put_str(0, y, &left, theme.statusbar_fg, theme.statusbar_bg, true, false);
 
     // Plugin status segments.
