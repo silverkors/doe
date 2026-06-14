@@ -21,7 +21,8 @@ doe a.md b.rs c.toml   # open several files as buffers
 - **Multi-cursor** — add cursor on next match (`Ctrl+D`), above/below
   (`Alt+↑/↓`), select all matches (`Ctrl+L`), edit at every cursor at once.
 - **Editing** — undo/redo, auto-indent, toggle line comment (`Ctrl+/`),
-  bold/italic wrap (`Ctrl+B` / `Ctrl+I`), smart home, word motions.
+  bold/italic wrap (`Ctrl+B` / `Ctrl+I`), matching-bracket highlight, smart
+  home, word motions.
 - **Search & replace** — incremental find (`Ctrl+F`), next/prev (`F3`/`Shift+F3`),
   smart-case, `:replace_all from to`.
 - **Mouse** — click to place cursor, drag to select, scroll wheel,
@@ -112,7 +113,8 @@ Written without `unsafe` Rust.
 
 ## Roadmap
 
-- **0.2 (in progress):** modeless editing + command palette ✓; remaining:
-  bracket matching, file picker via the palette, context-aware palette ranking.
+- **0.2 (in progress):** modeless editing + command palette ✓, bracket
+  matching ✓; remaining: file picker via the palette, context-aware palette
+  ranking.
 - **0.3:** tree-sitter highlighting, WASM sandboxed plugins, project view,
   Git status, autosave/recovery.

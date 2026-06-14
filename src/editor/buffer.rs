@@ -130,6 +130,66 @@ impl Buffer {
         Some(self.rope.slice(s..e).to_string())
     }
 
+    // --- bracket matching --------------------------------------------------
+
+    /// If a bracket sits at `pos` (or just before it, so the cursor can be on
+    /// either side), return `(bracket_pos, match_pos)` for the matching bracket.
+    /// The search is bounded by `max_scan` chars to stay fast on huge files.
+    pub fn matching_bracket(&self, pos: usize, max_scan: usize) -> Option<(usize, usize)> {
+        let len = self.rope.len_chars();
+        for &p in &[pos, pos.wrapping_sub(1)] {
+            if p >= len {
+                continue;
+            }
+            let ch = self.rope.char(p);
+            if let Some(m) = self.find_bracket_match(p, ch, max_scan) {
+                return Some((p, m));
+            }
+        }
+        None
+    }
+
+    fn find_bracket_match(&self, p: usize, ch: char, max_scan: usize) -> Option<usize> {
+        const OPEN: [char; 3] = ['(', '[', '{'];
+        const CLOSE: [char; 3] = [')', ']', '}'];
+        let len = self.rope.len_chars();
+        if let Some(i) = OPEN.iter().position(|&o| o == ch) {
+            let close = CLOSE[i];
+            let mut depth = 1usize;
+            let end = (p + 1 + max_scan).min(len);
+            for q in (p + 1)..end {
+                let c = self.rope.char(q);
+                if c == ch {
+                    depth += 1;
+                } else if c == close {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(q);
+                    }
+                }
+            }
+            None
+        } else if let Some(i) = CLOSE.iter().position(|&c| c == ch) {
+            let open = OPEN[i];
+            let mut depth = 1usize;
+            let start = p.saturating_sub(max_scan);
+            for q in (start..p).rev() {
+                let c = self.rope.char(q);
+                if c == ch {
+                    depth += 1;
+                } else if c == open {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(q);
+                    }
+                }
+            }
+            None
+        } else {
+            None
+        }
+    }
+
     // --- undo --------------------------------------------------------------
 
     fn snapshot(&self) -> Snapshot {
@@ -922,6 +982,20 @@ mod tests {
         b.move_vertical(1, false); // line 2 "world" -> goal col 4 restored
         let (l, c) = b.pos_to_line_col(b.cursors[0].head);
         assert_eq!((l, c), (2, 4));
+    }
+
+    #[test]
+    fn bracket_matching_pairs_and_nesting() {
+        // a ( b c [ d ] e ) f  -> indices 0..10
+        let b = buf("a(bc[d]e)f");
+        assert_eq!(b.matching_bracket(1, 1000), Some((1, 8))); // on '('
+        assert_eq!(b.matching_bracket(8, 1000), Some((8, 1))); // on ')'
+        assert_eq!(b.matching_bracket(9, 1000), Some((8, 1))); // just after ')'
+        assert_eq!(b.matching_bracket(4, 1000), Some((4, 6))); // inner '['
+        assert_eq!(b.matching_bracket(0, 1000), None); // not a bracket
+        // Unbalanced: no match.
+        let u = buf("(()");
+        assert_eq!(u.matching_bracket(0, 1000), None);
     }
 
     #[test]

@@ -11,7 +11,10 @@ use crossterm::style::Color;
 use std::io::Write;
 
 const SEARCH_BG: Color = Color::Rgb { r: 0x5a, g: 0x4a, b: 0x10 };
+const BRACKET_BG: Color = Color::Rgb { r: 0x3a, g: 0x44, b: 0x4e };
 const MAX_HIGHLIGHT_LINE: usize = 2000;
+/// Bound the matching-bracket scan so it stays cheap on very large files.
+const BRACKET_SCAN_LIMIT: usize = 200_000;
 
 pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::Result<()> {
     let theme = &app.config.theme;
@@ -21,6 +24,9 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     let buf = app.active_buffer();
     let layout = Layout::compute(app.width, app.height, buf.len_lines(), settings.line_numbers);
     let (cur_line, _) = buf.pos_to_line_col(buf.primary_cursor().head);
+
+    // Matching bracket pair for the primary cursor (display-only, bounded scan).
+    let bracket_pair = buf.matching_bracket(buf.primary_cursor().head, BRACKET_SCAN_LIMIT);
 
     let highlighter = highlighter_for(buf.language);
     // Seed fence state from the lines above the viewport so a code block whose
@@ -82,6 +88,7 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
 
             let mut fg = theme.color_for(kinds[col]);
             let mut bg = theme.background;
+            let mut bold = bolds[col];
 
             let is_ws = ch == ' ' || ch == '\t';
             let disp = match ch {
@@ -94,6 +101,13 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
                 fg = theme.whitespace;
             }
 
+            // Matching bracket pair (overridden by search/selection below).
+            if let Some((a, b)) = bracket_pair {
+                if idx == a || idx == b {
+                    bg = BRACKET_BG;
+                    bold = true;
+                }
+            }
             if is_in_match(idx, &line_matches) {
                 bg = SEARCH_BG;
             }
@@ -104,7 +118,7 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
                 bg = theme.selection;
             }
 
-            screen.set(x, y, Cell { ch: disp, fg, bg, bold: bolds[col], italic: itals[col] });
+            screen.set(x, y, Cell { ch: disp, fg, bg, bold, italic: itals[col] });
         }
     }
 
