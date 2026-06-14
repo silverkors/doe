@@ -103,6 +103,7 @@ fn run(app: &mut App) -> Result<()> {
     let mut out = io::stdout();
 
     loop {
+        app.recompute_fence_state();
         draw(&mut screen, app, &mut out)?;
         if app.should_quit {
             break;

@@ -23,7 +23,9 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     let (cur_line, _) = buf.pos_to_line_col(buf.primary_cursor().head);
 
     let highlighter = highlighter_for(buf.language);
-    let mut state = LineState::default();
+    // Seed fence state from the lines above the viewport so a code block whose
+    // opening fence has scrolled off the top still highlights correctly.
+    let mut state = LineState { in_code_block: app.top_in_code_block };
     let text_width = layout.text_width() as usize;
 
     // --- text area ---------------------------------------------------------

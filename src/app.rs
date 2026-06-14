@@ -11,6 +11,7 @@ use crate::input::keymap;
 use crate::input::mouse::gutter_width;
 use crate::plugins::{Event, PluginRegistry};
 use crate::search::{find, SearchState};
+use crate::syntax::Language;
 use crate::ui::commandline::{CommandLine, PromptKind};
 use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind, KeyModifiers};
 use std::path::PathBuf;
@@ -29,6 +30,10 @@ pub struct App {
     pub width: u16,
     pub height: u16,
     pub should_quit: bool,
+    /// Whether the first visible line sits inside a fenced code block. Computed
+    /// from the lines above the viewport so highlighting stays correct when the
+    /// opening fence has scrolled off the top.
+    pub top_in_code_block: bool,
     prev_mode: Mode,
     quit_confirm: bool,
     disk_warned: bool,
@@ -61,6 +66,7 @@ impl App {
             width: 80,
             height: 24,
             should_quit: false,
+            top_in_code_block: false,
             prev_mode: mode,
             quit_confirm: false,
             disk_warned: false,
@@ -84,6 +90,27 @@ impl App {
         self.width = w;
         self.height = h;
         self.ensure_cursor_visible();
+    }
+
+    /// Recompute whether the top visible line is inside a fenced code block, by
+    /// counting fence toggles in the lines above the viewport. Only Markdown
+    /// buffers need this; for everything else the state is trivially `false`,
+    /// which also keeps it O(1) on large code/text files. Called once per frame.
+    pub fn recompute_fence_state(&mut self) {
+        let buf = self.active_buffer();
+        if buf.language != Language::Markdown {
+            self.top_in_code_block = false;
+            return;
+        }
+        let rope = &buf.rope;
+        let limit = self.top_line.min(rope.len_lines());
+        let mut in_block = false;
+        for i in 0..limit {
+            if line_is_fence(rope.line(i)) {
+                in_block = !in_block;
+            }
+        }
+        self.top_in_code_block = in_block;
     }
 
     /// Detect external modification of the active file (called between input
@@ -646,4 +673,15 @@ impl App {
         self.ensure_cursor_visible();
         self.set_status(format!("replaced {count} occurrence(s)"));
     }
+}
+
+/// True if a line's first non-whitespace run opens/closes a Markdown code
+/// fence (```` ``` ```` or `~~~`). Only inspects the leading characters.
+fn line_is_fence(line: ropey::RopeSlice) -> bool {
+    let mut chars = line.chars().skip_while(|c| *c == ' ' || *c == '\t');
+    let first = match chars.next() {
+        Some(c @ ('`' | '~')) => c,
+        _ => return false,
+    };
+    chars.next() == Some(first) && chars.next() == Some(first)
 }
