@@ -8,6 +8,7 @@ pub mod overlay;
 pub mod palette;
 pub mod renderer;
 pub mod screen;
+pub mod settings;
 pub mod statusbar;
 pub mod wrap;
 

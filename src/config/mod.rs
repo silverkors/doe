@@ -6,7 +6,7 @@
 
 pub mod theme;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use theme::Theme;
@@ -16,12 +16,13 @@ pub struct Config {
     pub settings: Settings,
     pub keybindings: Keybindings,
     pub theme: Theme,
-    /// Base config directory; used for theme loading and future plugin discovery.
-    #[allow(dead_code)]
+    /// Base config directory; used for theme loading and recovery/usage stores.
     pub config_dir: PathBuf,
+    /// The user's own keybinding overrides (raw, for round-tripping on save).
+    user_keybindings: HashMap<String, HashMap<String, String>>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Settings {
     pub theme: String,
@@ -74,10 +75,11 @@ impl Keybindings {
     }
 }
 
+/// Just the keybindings table, parsed separately from settings so each parse
+/// ignores the other's keys (settings live at the top level, keybindings under
+/// `[keybindings.*]`).
 #[derive(Deserialize, Default)]
-struct ConfigFile {
-    #[serde(default)]
-    settings: Option<Settings>,
+struct KeybindingsFile {
     #[serde(default)]
     keybindings: HashMap<String, HashMap<String, String>>,
 }
@@ -91,13 +93,17 @@ impl Config {
 
         let mut settings = Settings::default();
         let mut keybindings = default_keybindings();
+        let mut user_keybindings: HashMap<String, HashMap<String, String>> = HashMap::new();
 
         if let Ok(text) = std::fs::read_to_string(&config_path) {
-            if let Ok(file) = toml::from_str::<ConfigFile>(&text) {
-                if let Some(s) = file.settings {
-                    settings = s;
-                }
-                keybindings.merge(file.keybindings);
+            // Top-level scalar keys → Settings (the [keybindings] table is an
+            // unknown field here and is ignored).
+            if let Ok(s) = toml::from_str::<Settings>(&text) {
+                settings = s;
+            }
+            if let Ok(kb) = toml::from_str::<KeybindingsFile>(&text) {
+                user_keybindings = kb.keybindings.clone();
+                keybindings.merge(kb.keybindings);
             }
         } else {
             // First run: scaffold config + default theme (best effort).
@@ -106,7 +112,51 @@ impl Config {
 
         let theme = Theme::load(&settings.theme, &config_dir.join("themes"));
 
-        Config { settings, keybindings, theme, config_dir }
+        Config { settings, keybindings, theme, config_dir, user_keybindings }
+    }
+
+    /// Reload the active theme after `settings.theme` changes.
+    pub fn reload_theme(&mut self) {
+        self.theme = Theme::load(&self.settings.theme, &self.config_dir.join("themes"));
+    }
+
+    /// Theme names available in the themes directory (always includes the
+    /// built-in `default-dark`).
+    pub fn available_themes(&self) -> Vec<String> {
+        let mut themes = vec!["default-dark".to_string()];
+        if let Ok(entries) = std::fs::read_dir(self.config_dir.join("themes")) {
+            for e in entries.flatten() {
+                if let Some(name) = e.path().file_stem().and_then(|s| s.to_str()) {
+                    if name != "default-dark" {
+                        themes.push(name.to_string());
+                    }
+                }
+            }
+        }
+        themes
+    }
+
+    /// Persist settings (and the user's keybinding overrides) to `config.toml`.
+    pub fn save(&self) {
+        let _ = std::fs::create_dir_all(&self.config_dir);
+        let mut out = String::from(
+            "# DOE configuration — editable here or via the in-editor settings panel (Ctrl+,)\n\n",
+        );
+        if let Ok(s) = toml::to_string(&self.settings) {
+            out.push_str(&s);
+        }
+        for (mode, binds) in &self.user_keybindings {
+            if binds.is_empty() {
+                continue;
+            }
+            out.push_str(&format!("\n[keybindings.{mode}]\n"));
+            let mut keys: Vec<_> = binds.iter().collect();
+            keys.sort();
+            for (chord, cmd) in keys {
+                out.push_str(&format!("{chord:?} = {cmd:?}\n"));
+            }
+        }
+        let _ = std::fs::write(self.config_dir.join("config.toml"), out);
     }
 }
 
@@ -136,6 +186,7 @@ fn config_base_dir() -> PathBuf {
 fn default_keybindings() -> Keybindings {
     let binds: &[(&str, &str)] = &[
         ("ctrl-p", "command_palette"),
+        ("ctrl-,", "settings"),
         ("ctrl-s", "save"),
         ("ctrl-q", "quit"),
         ("ctrl-z", "undo"),

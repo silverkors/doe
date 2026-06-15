@@ -16,6 +16,7 @@ use crate::plugins::{Event, PluginRegistry};
 use crate::search::{find, SearchState};
 use crate::syntax::Language;
 use crate::ui::commandline::{CommandLine, PromptKind};
+use crate::ui::settings::{self, SettingsPanel};
 use crate::ui::wrap;
 use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind, KeyModifiers};
 use std::path::{Path, PathBuf};
@@ -31,6 +32,7 @@ pub struct App {
     pub command: CommandLine,
     pub palette: Palette,
     pub file_picker: FilePicker,
+    pub settings_panel: SettingsPanel,
     pub search: SearchState,
     pub status_message: String,
     pub plugins: PluginRegistry,
@@ -134,6 +136,7 @@ impl App {
             command: CommandLine::default(),
             palette,
             file_picker,
+            settings_panel: SettingsPanel::default(),
             search: SearchState::default(),
             status_message: String::new(),
             plugins: PluginRegistry::with_builtins(),
@@ -386,6 +389,10 @@ impl App {
     // --- input -------------------------------------------------------------
 
     pub fn handle_key(&mut self, ev: KeyEvent) {
+        if self.settings_panel.open {
+            self.handle_settings_key(ev);
+            return;
+        }
         if self.palette.open {
             self.handle_palette_key(ev);
             return;
@@ -491,6 +498,86 @@ impl App {
                 self.file_picker.update();
             }
             _ => {}
+        }
+    }
+
+    pub fn selected_setting(&self) -> usize {
+        self.settings_panel.selected
+    }
+
+    /// Key handling while the settings panel is open.
+    fn handle_settings_key(&mut self, ev: KeyEvent) {
+        use crossterm::event::KeyCode::*;
+        match ev.code {
+            Esc | Enter => {
+                self.settings_panel.close();
+                self.config.save();
+            }
+            Up | BackTab => self.settings_panel.move_selection(-1),
+            Down | Tab => self.settings_panel.move_selection(1),
+            Left => self.adjust_selected_setting(-1),
+            Right | Char(' ') => self.adjust_selected_setting(1),
+            _ => {}
+        }
+    }
+
+    fn adjust_selected_setting(&mut self, delta: isize) {
+        let items = settings::items();
+        let item = &items[self.settings_panel.selected.min(items.len() - 1)];
+        let s = &mut self.config.settings;
+        match item.kind {
+            settings::Kind::Bool => match item.key {
+                "soft_wrap" => s.soft_wrap = !s.soft_wrap,
+                "line_numbers" => s.line_numbers = !s.line_numbers,
+                "relative_line_numbers" => s.relative_line_numbers = !s.relative_line_numbers,
+                "syntax_highlighting" => s.syntax_highlighting = !s.syntax_highlighting,
+                "insert_spaces" => s.insert_spaces = !s.insert_spaces,
+                "show_whitespace" => s.show_whitespace = !s.show_whitespace,
+                "trim_trailing_whitespace_on_save" => {
+                    s.trim_trailing_whitespace_on_save = !s.trim_trailing_whitespace_on_save
+                }
+                "mouse" => s.mouse = !s.mouse,
+                _ => {}
+            },
+            settings::Kind::Int(lo, hi) => {
+                if item.key == "tab_width" {
+                    let v = s.tab_width as isize + delta;
+                    s.tab_width = v.clamp(lo as isize, hi as isize) as usize;
+                }
+            }
+            settings::Kind::Choice => {
+                if item.key == "theme" {
+                    let themes = self.config.available_themes();
+                    if !themes.is_empty() {
+                        let cur = themes.iter().position(|t| t == &self.config.settings.theme).unwrap_or(0);
+                        let n = themes.len() as isize;
+                        let next = (((cur as isize + delta) % n + n) % n) as usize;
+                        self.config.settings.theme = themes[next].clone();
+                        self.config.reload_theme();
+                    }
+                }
+            }
+        }
+        // Geometry-affecting settings need the viewport re-clamped.
+        self.ensure_cursor_visible();
+    }
+
+    /// Human-readable current value for a setting key (for the panel display).
+    pub fn setting_value(&self, key: &str) -> String {
+        let s = &self.config.settings;
+        let on = |b: bool| if b { "on".to_string() } else { "off".to_string() };
+        match key {
+            "theme" => s.theme.clone(),
+            "soft_wrap" => on(s.soft_wrap),
+            "line_numbers" => on(s.line_numbers),
+            "relative_line_numbers" => on(s.relative_line_numbers),
+            "syntax_highlighting" => on(s.syntax_highlighting),
+            "tab_width" => s.tab_width.to_string(),
+            "insert_spaces" => on(s.insert_spaces),
+            "show_whitespace" => on(s.show_whitespace),
+            "trim_trailing_whitespace_on_save" => on(s.trim_trailing_whitespace_on_save),
+            "mouse" => on(s.mouse),
+            _ => String::new(),
         }
     }
 
@@ -814,6 +901,8 @@ impl App {
 
             // Command palette
             Command::CommandPalette => self.palette.open(),
+
+            Command::Settings => self.settings_panel.open(),
 
             // View
             Command::ToggleSoftWrap => {

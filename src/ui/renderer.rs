@@ -219,12 +219,17 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
         super::palette::render(screen, app)
     } else if app.file_picker.open {
         super::file_picker::render(screen, app)
+    } else if app.settings_panel.open {
+        super::settings::render(screen, app);
+        None
     } else {
         None
     };
 
     // --- final cursor position --------------------------------------------
-    screen.cursor = if app.palette.open || app.file_picker.open {
+    screen.cursor = if app.settings_panel.open {
+        None // navigated with arrows; no text caret
+    } else if app.palette.open || app.file_picker.open {
         overlay_cursor
     } else if app.command.active {
         command_cursor

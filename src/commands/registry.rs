@@ -82,6 +82,7 @@ pub fn parse(input: &str) -> Option<Command> {
 
         "command_palette" => Command::CommandPalette,
         "toggle_soft_wrap" => Command::ToggleSoftWrap,
+        "settings" | "preferences" => Command::Settings,
 
         _ => return None,
     };

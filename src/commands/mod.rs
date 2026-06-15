@@ -84,6 +84,7 @@ pub enum Command {
 
     // View
     ToggleSoftWrap,
+    Settings,
 
     // Misc
     #[allow(dead_code)]
