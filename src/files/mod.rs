@@ -2,6 +2,8 @@
 //! external-change detection) lives on [`crate::editor::buffer::Buffer`]; this
 //! module holds path utilities shared across the editor.
 
+pub mod picker;
+
 use std::path::{Path, PathBuf};
 
 /// Expand a leading `~` to the user's home directory.

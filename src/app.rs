@@ -8,6 +8,7 @@ use crate::commands::{registry, Command, BINDING_CONTEXT};
 use crate::config::Config;
 use crate::editor::Buffer;
 use crate::files;
+use crate::files::picker::FilePicker;
 use crate::input::keymap;
 use crate::input::mouse::gutter_width;
 use crate::plugins::{Event, PluginRegistry};
@@ -28,6 +29,7 @@ pub struct App {
     pub top_subrow: usize,
     pub command: CommandLine,
     pub palette: Palette,
+    pub file_picker: FilePicker,
     pub search: SearchState,
     pub status_message: String,
     pub plugins: PluginRegistry,
@@ -64,6 +66,7 @@ impl App {
             top_subrow: 0,
             command: CommandLine::default(),
             palette,
+            file_picker: FilePicker::new(),
             search: SearchState::default(),
             status_message: String::new(),
             plugins: PluginRegistry::with_builtins(),
@@ -281,6 +284,10 @@ impl App {
             self.handle_palette_key(ev);
             return;
         }
+        if self.file_picker.open {
+            self.handle_file_picker_key(ev);
+            return;
+        }
         if self.command.active {
             self.handle_command_key(ev);
             return;
@@ -356,6 +363,33 @@ impl App {
         }
     }
 
+    /// Key handling while the fuzzy file picker is open.
+    fn handle_file_picker_key(&mut self, ev: KeyEvent) {
+        use crossterm::event::KeyCode::*;
+        match ev.code {
+            Esc => self.file_picker.close(),
+            Enter => {
+                let path = self.file_picker.selected_path();
+                self.file_picker.close();
+                if let Some(p) = path {
+                    self.status_message.clear();
+                    self.do_open(p);
+                }
+            }
+            Up | BackTab => self.file_picker.move_selection(-1),
+            Down | Tab => self.file_picker.move_selection(1),
+            Backspace => {
+                self.file_picker.query.pop();
+                self.file_picker.update();
+            }
+            Char(c) if !ev.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.file_picker.query.push(c);
+                self.file_picker.update();
+            }
+            _ => {}
+        }
+    }
+
     fn handle_command_key(&mut self, ev: KeyEvent) {
         use crossterm::event::KeyCode::*;
         match ev.code {
@@ -425,9 +459,6 @@ impl App {
             }
             Some(PromptKind::SaveAs) => {
                 self.execute(Command::SaveAs(files::expand_path(&input)));
-            }
-            Some(PromptKind::Open) => {
-                self.execute(Command::OpenFile(files::expand_path(&input)));
             }
             None => {}
         }
@@ -541,7 +572,8 @@ impl App {
             Command::SaveAs(p) => self.do_save_as(p),
             Command::OpenFile(p) => {
                 if p.as_os_str().is_empty() {
-                    self.open_prompt(PromptKind::Open, "");
+                    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                    self.file_picker.open(cwd);
                 } else {
                     self.do_open(p);
                 }

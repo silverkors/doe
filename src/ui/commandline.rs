@@ -12,8 +12,6 @@ pub enum PromptKind {
     Replace,
     /// Save under a new path.
     SaveAs,
-    /// Open a file by path.
-    Open,
 }
 
 impl PromptKind {
@@ -22,7 +20,6 @@ impl PromptKind {
             PromptKind::Find => "find: ",
             PromptKind::Replace => "replace (from|to): ",
             PromptKind::SaveAs => "save as: ",
-            PromptKind::Open => "open: ",
         }
     }
 }

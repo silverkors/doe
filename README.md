@@ -48,6 +48,11 @@ point is a fast, fuzzy command palette:
 - *(Planned: context-aware ranking — guessing the next action from what you're
   doing.)*
 
+**`Ctrl+O` opens a fuzzy file picker** with the same UI: it scans the working
+directory (skipping `.git`, `target`, `node_modules`, `dist`, `build`, hidden
+files) and fuzzy-filters project files — type a few characters of a path,
+`Enter` opens it.
+
 ## Key bindings (defaults)
 
 | Key | Action | Key | Action |
@@ -60,7 +65,7 @@ point is a fast, fuzzy command palette:
 | `Ctrl+A` | select all | `Ctrl+L` | select line |
 | `Ctrl+D` | select word / add next occurrence | `Alt+F3` | select all occurrences |
 | `Ctrl+/` | toggle comment | `Esc` | clear extra cursors |
-| `Ctrl+O` | open file | `Ctrl+End` / `Ctrl+Home` | end / start of file |
+| `Ctrl+O` | fuzzy file picker | `Ctrl+End` / `Ctrl+Home` | end / start of file |
 | `Alt+Z` | toggle soft wrap | | |
 
 Everything else lives in the palette.
@@ -95,11 +100,11 @@ src/
   config/        settings, keybindings, themes
   editor/        rope buffer, cursors, selections, undo
   syntax/        language detection, markdown + code highlighters
-  ui/            diffing screen, renderer, status bar, command line, palette
+  ui/            diffing screen, renderer, soft-wrap, overlay (palette/picker)
   input/         key-chord normalization, mouse layout
   search/        find / replace
   plugins/       plugin API, registry, built-ins
-  files/         path helpers
+  files/         path helpers, fuzzy file picker
 ```
 
 Everything — keybindings, command line, mouse, plugins — flows through the
@@ -117,8 +122,7 @@ Written without `unsafe` Rust.
 
 ## Roadmap
 
-- **0.2 (in progress):** modeless editing + command palette ✓, bracket
-  matching ✓; remaining: file picker via the palette, context-aware palette
-  ranking.
+- **0.2:** modeless editing + command palette ✓, bracket matching ✓, soft
+  wrap ✓, fuzzy file picker ✓.
 - **0.3:** tree-sitter highlighting, WASM sandboxed plugins, project view,
-  Git status, autosave/recovery.
+  Git status, autosave/recovery, context-aware palette ranking.
