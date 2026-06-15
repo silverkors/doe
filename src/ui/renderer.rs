@@ -31,7 +31,7 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     let highlighter = highlighter_for(buf.language);
     // Seed fence state from the lines above the viewport so a code block whose
     // opening fence has scrolled off the top still highlights correctly.
-    let mut state = LineState { in_code_block: app.top_in_code_block };
+    let mut state = LineState { in_code_block: app.top_in_code_block, ..Default::default() };
     let text_width = layout.text_width() as usize;
 
     // --- build the list of visual rows to paint ----------------------------

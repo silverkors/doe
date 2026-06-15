@@ -32,6 +32,9 @@ pub struct Theme {
     pub link: Color,
     pub list_marker: Color,
     pub quote: Color,
+    pub callout: Color,
+    pub tag: Color,
+    pub attribute: Color,
     pub markup_punct: Color,
 }
 
@@ -61,6 +64,9 @@ impl Theme {
             link: Color::Rgb { r: 0x6c, g: 0xb6, b: 0xff },
             list_marker: Color::Rgb { r: 0xff, g: 0xcc, b: 0x66 },
             quote: Color::Rgb { r: 0x99, g: 0xa0, b: 0xaa },
+            callout: Color::Rgb { r: 0x9d, g: 0x7c, b: 0xd8 },
+            tag: Color::Rgb { r: 0xe0, g: 0x6c, b: 0x75 },
+            attribute: Color::Rgb { r: 0xff, g: 0xcc, b: 0x66 },
             markup_punct: Color::Rgb { r: 0x60, g: 0x66, b: 0x72 },
         }
     }
@@ -94,6 +100,9 @@ impl Theme {
             StyleKind::Link => self.link,
             StyleKind::ListMarker => self.list_marker,
             StyleKind::Quote => self.quote,
+            StyleKind::Callout => self.callout,
+            StyleKind::Tag => self.tag,
+            StyleKind::Attribute => self.attribute,
             StyleKind::MarkupPunct => self.markup_punct,
         }
     }
@@ -129,6 +138,9 @@ struct ThemeColors {
     link: Option<String>,
     list_marker: Option<String>,
     quote: Option<String>,
+    callout: Option<String>,
+    tag: Option<String>,
+    attribute: Option<String>,
     markup_punct: Option<String>,
 }
 
@@ -156,6 +168,9 @@ impl ThemeColors {
         set(&self.link, &mut t.link);
         set(&self.list_marker, &mut t.list_marker);
         set(&self.quote, &mut t.quote);
+        set(&self.callout, &mut t.callout);
+        set(&self.tag, &mut t.tag);
+        set(&self.attribute, &mut t.attribute);
         set(&self.markup_punct, &mut t.markup_punct);
     }
 }

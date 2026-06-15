@@ -16,6 +16,8 @@ doe a.md b.rs c.toml   # open several files as buffers
   middle of huge files without copying, full UTF-8 support.
 - **Markdown highlighting** — headings, lists, block quotes, fenced code,
   links, inline code, **bold**/*italic*, with dimmed markup punctuation.
+  Also **callouts** (`> [!note] Title` — accent bar, dimmed `[!type]`, styled
+  title and body) and inline **HTML/XML tags** (`<font color="…">`).
 - **Code highlighting** — Rust, Python, JS/TS, HTML/XML, CSS, JSON, TOML, YAML,
   Swift (keyword/string/comment/number, keyword-driven for now).
 - **Multi-cursor** — add cursor on next match (`Ctrl+D`), above/below

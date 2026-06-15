@@ -247,5 +247,8 @@ code = "#cca97a"
 link = "#6cb6ff"
 list_marker = "#ffcc66"
 quote = "#99a0aa"
+callout = "#9d7cd8"
+tag = "#e06c75"
+attribute = "#ffcc66"
 markup_punct = "#606672"
 "##;

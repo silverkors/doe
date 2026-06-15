@@ -30,6 +30,12 @@ impl Highlighter for MarkdownHighlighter {
             return vec![Span::new(0, n, StyleKind::MarkupPunct)];
         }
 
+        // A callout block continues only across consecutive `>` lines.
+        let is_blockquote = trimmed_start < n && chars[trimmed_start] == '>';
+        if !is_blockquote {
+            state.in_callout = false;
+        }
+
         // Heading: #{1,6} followed by space.
         if let Some(level) = heading_level(&chars, trimmed_start) {
             let mut spans = Vec::new();
@@ -41,10 +47,30 @@ impl Highlighter for MarkdownHighlighter {
             return spans;
         }
 
-        // Block quote.
-        if trimmed_start < n && chars[trimmed_start] == '>' {
-            let mut spans = vec![Span::new(0, trimmed_start + 1, StyleKind::MarkupPunct)];
-            inline(&chars, trimmed_start + 1, n, &mut spans, StyleKind::Quote);
+        // Block quote / callout (`> [!type] Title`).
+        if is_blockquote {
+            let mut content = trimmed_start + 1;
+            if content < n && chars[content] == ' ' {
+                content += 1;
+            }
+            let mut spans = Vec::new();
+
+            if let Some(type_end) = callout_marker_end(&chars, content, n) {
+                // Callout header: accent bar, dimmed [!type], styled title.
+                state.in_callout = true;
+                spans.push(Span::new(0, content, StyleKind::Callout));
+                spans.push(Span::new(content, type_end, StyleKind::MarkupPunct));
+                let mut title = Span::new(type_end, n, StyleKind::Callout);
+                title.bold = true;
+                spans.push(title);
+                inline(&chars, type_end, n, &mut spans, StyleKind::Default);
+                return spans;
+            }
+
+            // Plain blockquote line, or the body of a callout.
+            let bar = if state.in_callout { StyleKind::Callout } else { StyleKind::MarkupPunct };
+            spans.push(Span::new(0, content, bar));
+            inline(&chars, content, n, &mut spans, StyleKind::Quote);
             return spans;
         }
 
@@ -152,8 +178,71 @@ fn inline(chars: &[char], from: usize, to: usize, out: &mut Vec<Span>, base: Sty
                 }
             }
         }
+        // Inline HTML/XML tag: <font color="…"> … </font>
+        if c == '<' {
+            if let Some(end) = html_tag(chars, i, to, out) {
+                i = end;
+                continue;
+            }
+        }
         i += 1;
     }
+}
+
+/// If `[!type]` starts at `start`, return the index just past the `]`.
+fn callout_marker_end(chars: &[char], start: usize, n: usize) -> Option<usize> {
+    if start + 2 < n && chars[start] == '[' && chars[start + 1] == '!' {
+        let j = find_char(chars, start + 2, n, ']')?;
+        if j > start + 2 {
+            return Some(j + 1);
+        }
+    }
+    None
+}
+
+/// Highlight an HTML/XML tag starting at `<` (index `i`): delimiters and `=` as
+/// punctuation, the tag name, attribute names and quoted values. Returns the
+/// index just past `>`, or `None` if it isn't a tag.
+fn html_tag(chars: &[char], i: usize, to: usize, out: &mut Vec<Span>) -> Option<usize> {
+    let mut p = i + 1;
+    let slash = p < to && chars[p] == '/';
+    if slash {
+        p += 1;
+    }
+    if p >= to || !chars[p].is_ascii_alphabetic() {
+        return None;
+    }
+    let gt = find_char(chars, p, to, '>')?;
+
+    out.push(Span::new(i, p, StyleKind::MarkupPunct)); // `<` or `</`
+    let mut q = p;
+    while q < gt && (chars[q].is_ascii_alphanumeric() || chars[q] == '-' || chars[q] == ':') {
+        q += 1;
+    }
+    out.push(Span::new(p, q, StyleKind::Tag));
+
+    while q < gt {
+        let c = chars[q];
+        if c == '"' || c == '\'' {
+            let end = find_char(chars, q + 1, gt, c).map(|e| e + 1).unwrap_or(gt);
+            out.push(Span::new(q, end, StyleKind::String));
+            q = end;
+        } else if c == '=' || c == '/' {
+            out.push(Span::new(q, q + 1, StyleKind::MarkupPunct));
+            q += 1;
+        } else if c.is_ascii_alphabetic() || c == '-' || c == ':' {
+            let mut r = q;
+            while r < gt && (chars[r].is_ascii_alphanumeric() || chars[r] == '-' || chars[r] == ':') {
+                r += 1;
+            }
+            out.push(Span::new(q, r, StyleKind::Attribute));
+            q = r;
+        } else {
+            q += 1;
+        }
+    }
+    out.push(Span::new(gt, gt + 1, StyleKind::MarkupPunct)); // `>`
+    Some(gt + 1)
 }
 
 fn find_char(chars: &[char], from: usize, to: usize, target: char) -> Option<usize> {
@@ -169,4 +258,57 @@ fn find_seq(chars: &[char], from: usize, to: usize, a: char, b: char) -> Option<
         i += 1;
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MarkdownHighlighter;
+    use crate::syntax::{Highlighter, LineState, StyleKind};
+
+    fn hl(text: &str, state: &mut LineState) -> Vec<super::Span> {
+        MarkdownHighlighter.highlight_line(text, state)
+    }
+
+    #[test]
+    fn callout_header_sets_state_and_styles() {
+        let mut st = LineState::default();
+        let spans = hl("> [!key] Åkallan *Svensk psalm*", &mut st);
+        assert!(st.in_callout);
+        assert!(spans.iter().any(|s| s.kind == StyleKind::Callout)); // accent bar/title
+        assert!(spans.iter().any(|s| s.kind == StyleKind::MarkupPunct)); // [!key]
+        assert!(spans.iter().any(|s| s.kind == StyleKind::Italic)); // *Svensk psalm*
+    }
+
+    #[test]
+    fn callout_body_uses_accent_bar() {
+        let mut st = LineState { in_callout: true, ..Default::default() };
+        let spans = hl("> Gud, kom till min räddning,", &mut st);
+        let bar = spans.iter().find(|s| s.start == 0).unwrap();
+        assert_eq!(bar.kind, StyleKind::Callout);
+        assert!(st.in_callout);
+    }
+
+    #[test]
+    fn plain_blockquote_is_not_a_callout() {
+        let mut st = LineState::default();
+        let spans = hl("> just a quote", &mut st);
+        assert!(!st.in_callout);
+        assert!(spans.iter().any(|s| s.kind == StyleKind::Quote));
+    }
+
+    #[test]
+    fn non_blockquote_line_clears_callout() {
+        let mut st = LineState { in_callout: true, ..Default::default() };
+        hl("back to normal text", &mut st);
+        assert!(!st.in_callout);
+    }
+
+    #[test]
+    fn inline_html_tag_highlighted() {
+        let mut st = LineState::default();
+        let spans = hl(r##"<font color="#c00000">_(Tystnad)_</font>"##, &mut st);
+        assert!(spans.iter().any(|s| s.kind == StyleKind::Tag)); // font
+        assert!(spans.iter().any(|s| s.kind == StyleKind::Attribute)); // color
+        assert!(spans.iter().any(|s| s.kind == StyleKind::String)); // "#c00000"
+    }
 }

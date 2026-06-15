@@ -20,6 +20,12 @@ pub enum StyleKind {
     Link,
     ListMarker,
     Quote,
+    /// Callout accent (the left bar and title of `> [!note]` blocks).
+    Callout,
+    /// HTML/XML tag name inside Markdown (`<font>`).
+    Tag,
+    /// HTML/XML attribute name (`color=`).
+    Attribute,
     /// Dimmed markup punctuation (`**`, backticks, `#`, …).
     MarkupPunct,
 }
@@ -40,11 +46,13 @@ impl Span {
     }
 }
 
-/// Per-line carry state so multi-line constructs (e.g. fenced code blocks) work
-/// when the lines are visible together.
+/// Per-line carry state so multi-line constructs (fenced code blocks, callout
+/// blocks) work when the lines are visible together.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LineState {
     pub in_code_block: bool,
+    /// Whether the current line continues a `> [!type]` callout block.
+    pub in_callout: bool,
 }
 
 /// Anything that can highlight a line of text.
