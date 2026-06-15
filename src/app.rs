@@ -85,7 +85,6 @@ impl App {
         for p in opened {
             app.file_picker.record_open(&p);
         }
-        app.set_status_hint();
         app
     }
 
@@ -133,11 +132,6 @@ impl App {
         }
     }
 
-    fn set_status_hint(&mut self) {
-        self.status_message =
-            "Ctrl+P commands · Ctrl+S save · Ctrl+F find · Ctrl+D multi-cursor".to_string();
-    }
-
     fn set_status(&mut self, msg: impl Into<String>) {
         self.status_message = msg.into();
     }
@@ -149,7 +143,8 @@ impl App {
     }
 
     fn text_rows(&self) -> usize {
-        self.height.saturating_sub(2) as usize
+        // One reserved row at the bottom: the combined status/command line.
+        self.height.saturating_sub(1) as usize
     }
 
     fn text_cols(&self) -> usize {
@@ -382,7 +377,8 @@ impl App {
                 crate::files::picker::Accept::Stay => {}
             },
             Up | BackTab => self.file_picker.move_selection(-1),
-            Down | Tab => self.file_picker.move_selection(1),
+            Down => self.file_picker.move_selection(1),
+            Tab => self.file_picker.complete(),
             Backspace => {
                 self.file_picker.query.pop();
                 self.file_picker.update();

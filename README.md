@@ -57,7 +57,9 @@ point is a fast, fuzzy command palette:
   (the working dir is scanned, skipping `.git`/`target`/`node_modules`/`dist`/
   `build`/hidden).
 - **Filesystem navigation** — type a path (anything with `/`, or starting `~`
-  `.` `/`) to browse: pick a directory to descend, a file to open.
+  `.` `/`) to browse: pick a directory to descend, a file to open. `Tab`
+  autocompletes the path (unique match completes fully and descends into
+  directories; otherwise to the longest common prefix).
 - **Arbitrary paths & new files** — the first row in path mode opens exactly
   what you typed (existing or new, inside or outside the tree); in search mode
   an unmatched name offers to create it.

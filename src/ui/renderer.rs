@@ -206,11 +206,13 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
         }
     }
 
-    // --- status bar --------------------------------------------------------
-    draw_status_bar(screen, app, &layout);
-
-    // --- command line / message -------------------------------------------
-    let command_cursor = draw_command_line(screen, app, &layout);
+    // --- combined status / command / message line -------------------------
+    let command_cursor = if app.command.active {
+        draw_prompt(screen, app, &layout)
+    } else {
+        draw_status_bar(screen, app, &layout);
+        None
+    };
 
     // --- overlays (drawn on top of everything) ----------------------------
     let overlay_cursor = if app.palette.open {
@@ -260,8 +262,14 @@ fn draw_status_bar(screen: &mut Screen, app: &App, layout: &Layout) {
         screen.set(x, y, Cell { ch: ' ', fg: theme.statusbar_fg, bg: theme.statusbar_bg, bold: false, italic: false });
     }
 
-    let left = statusbar::left_text(buf);
-    screen.put_str(0, y, &left, theme.statusbar_fg, theme.statusbar_bg, true, false);
+    // Left shows a transient message when present, otherwise the file name.
+    let left = if app.status_message.is_empty() {
+        statusbar::left_text(buf)
+    } else {
+        format!(" {}", app.status_message)
+    };
+    let bold = app.status_message.is_empty();
+    screen.put_str(0, y, &left, theme.statusbar_fg, theme.statusbar_bg, bold, false);
 
     // Plugin status segments.
     let c = buf.primary_cursor();
@@ -284,25 +292,18 @@ fn draw_status_bar(screen: &mut Screen, app: &App, layout: &Layout) {
     }
 }
 
-/// Returns the desired terminal cursor position when a prompt is active.
-fn draw_command_line(screen: &mut Screen, app: &App, layout: &Layout) -> Option<(u16, u16)> {
+/// Draw an active prompt (find/replace/save-as) on the bottom row, returning the
+/// terminal cursor position.
+fn draw_prompt(screen: &mut Screen, app: &App, layout: &Layout) -> Option<(u16, u16)> {
     let theme = &app.config.theme;
-    let y = layout.command_row;
+    let y = layout.status_row;
     for x in 0..layout.width {
         screen.set(x, y, Cell { ch: ' ', fg: theme.foreground, bg: theme.background, bold: false, italic: false });
     }
-
-    if app.command.active {
-        let label = app.command.label();
-        let x = screen.put_str(0, y, label, theme.line_number_current, theme.background, false, false);
-        let end = screen.put_str(x, y, &app.command.input, theme.foreground, theme.background, false, false);
-        Some((end.min(layout.width.saturating_sub(1)), y))
-    } else {
-        if !app.status_message.is_empty() {
-            screen.put_str(0, y, &app.status_message, theme.comment, theme.background, false, false);
-        }
-        None
-    }
+    let label = app.command.label();
+    let x = screen.put_str(0, y, label, theme.line_number_current, theme.background, false, false);
+    let end = screen.put_str(x, y, &app.command.input, theme.foreground, theme.background, false, false);
+    Some((end.min(layout.width.saturating_sub(1)), y))
 }
 
 fn is_in_match(idx: usize, matches: &[(usize, usize)]) -> bool {

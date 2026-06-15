@@ -112,6 +112,61 @@ impl FilePicker {
         }
     }
 
+    /// Tab completion. In path mode, complete the typed path toward the matching
+    /// directory entries: a unique match completes fully (directories gain a
+    /// trailing `/` so you descend straight in), multiple matches complete to
+    /// their longest common prefix. Outside path mode, Tab just advances the
+    /// selection.
+    pub fn complete(&mut self) {
+        if !is_path_like(&self.query) {
+            self.move_selection(1);
+            return;
+        }
+        let q = self.query.clone();
+        let resolved = resolve(&q, &self.root);
+        let (dir, partial) = if q.ends_with('/') {
+            (resolved.clone(), String::new())
+        } else {
+            (
+                resolved.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| resolved.clone()),
+                resolved.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            )
+        };
+        let prefix = dir_prefix(&q);
+        let pl = partial.to_lowercase();
+
+        let mut names: Vec<(String, bool)> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                // Skip hidden entries unless the user explicitly typed a dot.
+                if name.starts_with('.') && !pl.starts_with('.') {
+                    continue;
+                }
+                if !name.to_lowercase().starts_with(&pl) {
+                    continue;
+                }
+                let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                names.push((name, is_dir));
+            }
+        }
+        if names.is_empty() {
+            return;
+        }
+        names.sort();
+        if names.len() == 1 {
+            let (name, is_dir) = &names[0];
+            self.query = format!("{prefix}{name}{}", if *is_dir { "/" } else { "" });
+        } else {
+            let lcp = longest_common_prefix(names.iter().map(|(n, _)| n.as_str()));
+            if lcp.chars().count() > partial.chars().count() {
+                self.query = format!("{prefix}{lcp}");
+            }
+        }
+        self.selected = 0;
+        self.update();
+    }
+
     /// Record that `path` was opened (front of the recent list, deduped).
     pub fn record_open(&mut self, path: &Path) {
         let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
@@ -308,6 +363,22 @@ fn resolve(q: &str, root: &Path) -> PathBuf {
     }
 }
 
+/// Longest common (char-wise) prefix of a set of strings.
+fn longest_common_prefix<'a>(mut iter: impl Iterator<Item = &'a str>) -> String {
+    let mut prefix: String = match iter.next() {
+        Some(s) => s.to_string(),
+        None => return String::new(),
+    };
+    for s in iter {
+        let common: String = prefix.chars().zip(s.chars()).take_while(|(a, b)| a == b).map(|(a, _)| a).collect();
+        prefix = common;
+        if prefix.is_empty() {
+            break;
+        }
+    }
+    prefix
+}
+
 /// The portion of `q` up to and including the last `/` (the typed directory).
 fn dir_prefix(q: &str) -> String {
     match q.rfind('/') {
@@ -418,6 +489,36 @@ mod tests {
         p.accept(); // expand
         assert_eq!(p.results.iter().filter(|r| r.hint == "recent").count(), 12);
         assert!(!p.results.iter().any(|r| matches!(r.action, Activate::ExpandRecent)));
+    }
+
+    #[test]
+    fn tab_completes_unique_directory() {
+        let tmp = std::env::temp_dir().join("doe_complete_unique");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("uniquedir")).unwrap();
+        std::fs::write(tmp.join("afile.txt"), "x").unwrap();
+
+        let mut p = FilePicker { root: tmp.clone(), ..Default::default() };
+        p.query = format!("{}/uniq", tmp.display());
+        p.complete();
+        assert_eq!(p.query, format!("{}/uniquedir/", tmp.display()));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn tab_completes_to_common_prefix() {
+        let tmp = std::env::temp_dir().join("doe_complete_lcp");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("common_a")).unwrap();
+        std::fs::create_dir_all(tmp.join("common_b")).unwrap();
+
+        let mut p = FilePicker { root: tmp.clone(), ..Default::default() };
+        p.query = format!("{}/comm", tmp.display());
+        p.complete();
+        assert_eq!(p.query, format!("{}/common_", tmp.display()));
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]
