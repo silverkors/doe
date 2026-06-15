@@ -95,7 +95,7 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     let mut line_matches: Vec<(usize, usize)> = Vec::new();
     let mut loaded_preview: Option<PreviewRole> = None;
     let mut prev_glyphs: Vec<crate::syntax::markdown::InlineGlyph> = Vec::new();
-    let mut prev_rows: Vec<(usize, usize)> = Vec::new();
+    let mut prev_prefix: usize = 0;
     let mut sub = 0usize;
 
     for vr in &visrows {
@@ -110,11 +110,13 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
             } else {
                 None
             };
-            // Render a callout header/body's inline content and word-wrap it to
-            // the card width, so soft wrap works inside the callout.
+            // Render a callout header/body's inline content. Each glyph keeps its
+            // source index, so the renderer can pick the glyphs that fall in each
+            // raw wrap segment — giving exactly one card row per raw row (soft
+            // wrap works, markup is concealed, and there is no row mismatch).
             prev_glyphs = Vec::new();
-            prev_rows = Vec::new();
-            if let Some(PreviewRole::Header(ty) | PreviewRole::Body(ty)) = &loaded_preview {
+            prev_prefix = 0;
+            if let Some(PreviewRole::Header(_) | PreviewRole::Body(_)) = &loaded_preview {
                 let ltext = line_text(buf, vr.line);
                 let after = ltext.trim_start().strip_prefix('>').unwrap_or("").trim_start();
                 let content = if matches!(loaded_preview, Some(PreviewRole::Header(_))) {
@@ -123,13 +125,8 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
                     after
                 };
                 prev_glyphs = crate::syntax::markdown::rendered_inline(content);
-                let avail = (app.width as usize).saturating_sub(layout.text_x() as usize + 3).max(1);
-                let first = if matches!(loaded_preview, Some(PreviewRole::Header(_))) {
-                    avail.saturating_sub(ty.chars().count() + 4).max(1)
-                } else {
-                    avail
-                };
-                prev_rows = wrap_glyphs(&prev_glyphs, first, avail);
+                // Raw chars stripped before the content (the `> [!type] ` prefix).
+                prev_prefix = line_len - content.chars().count();
             }
             let text: String = buf.rope.slice(line_start..line_start + line_len).to_string();
             chars = text.chars().collect();
@@ -169,7 +166,7 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
 
         // Callout preview: draw a decorated card row and skip the raw cells.
         if let Some(role) = &loaded_preview {
-            draw_callout_card_row(screen, &layout, app, vr.y, role, sub, &prev_glyphs, &prev_rows);
+            draw_callout_card_row(screen, &layout, app, vr.y, role, sub == 0, &prev_glyphs, prev_prefix, vr.start, vr.end);
             continue;
         }
 
@@ -505,52 +502,23 @@ fn tint(bg: Color, accent: Color, t: f32) -> Color {
     }
 }
 
-/// Greedy word-wrap of rendered glyphs into `(start, end)` index ranges. The
-/// first row may have a different width (to leave room for a header label).
-fn wrap_glyphs(glyphs: &[crate::syntax::markdown::InlineGlyph], first_w: usize, w: usize) -> Vec<(usize, usize)> {
-    let n = glyphs.len();
-    let mut rows = Vec::new();
-    let mut start = 0;
-    let mut cap = first_w.max(1);
-    while start < n {
-        let end_max = (start + cap).min(n);
-        if end_max == n {
-            rows.push((start, n));
-            break;
-        }
-        // Break at the last space within the row, else hard-break.
-        let mut cut = end_max;
-        let mut k = end_max;
-        while k > start {
-            k -= 1;
-            if glyphs[k].ch == ' ' {
-                cut = k + 1;
-                break;
-            }
-        }
-        rows.push((start, cut));
-        start = cut;
-        cap = w.max(1);
-    }
-    if rows.is_empty() {
-        rows.push((0, 0));
-    }
-    rows
-}
-
-/// Draw one visual row (`sub`) of a callout card: tinted background, accent side
-/// borders, and — for header/body — the wrapped slice of rendered inline content
-/// (`prev_rows[sub]`), with the header label on its first row. Top/bottom
-/// borders reuse the blank lines around the callout, preserving 1 line = 1 row.
+/// Draw one card row: tinted background, accent side borders, and — for
+/// header/body — the rendered glyphs whose source falls in this raw wrap segment
+/// `[seg_start, seg_end)` (so there is exactly one card row per raw row, soft
+/// wrap works, and markup is concealed). The header label appears on its first
+/// row. Top/bottom borders reuse the blank lines around the callout.
+#[allow(clippy::too_many_arguments)]
 fn draw_callout_card_row(
     screen: &mut Screen,
     layout: &Layout,
     app: &App,
     y: u16,
     role: &PreviewRole,
-    sub: usize,
+    first_row: bool,
     glyphs: &[crate::syntax::markdown::InlineGlyph],
-    rows: &[(usize, usize)],
+    prefix: usize,
+    seg_start: usize,
+    seg_end: usize,
 ) {
     let theme = &app.config.theme;
     let ty = match role {
@@ -581,42 +549,34 @@ fn draw_callout_card_row(
             screen.set(right, y, Cell { ch: '│', fg: accent, bg: card_bg, bold: false, italic: false });
             let header = matches!(role, PreviewRole::Header(_));
             let mut cx = x0 + 2;
-            if header && sub == 0 {
+            if header && first_row {
                 cx = screen.put_str(cx, y, &icon.to_string(), accent, card_bg, true, false);
                 cx = screen.put_str(cx, y, " ", accent, card_bg, false, false);
                 cx = screen.put_str(cx, y, &ty.to_uppercase(), accent, card_bg, true, false);
                 cx = screen.put_str(cx, y, "  ", accent, card_bg, false, false);
             }
-            if let Some(&(gs, ge)) = rows.get(sub) {
-                put_glyphs(screen, cx, right, y, &glyphs[gs..ge.min(glyphs.len())], theme, theme.foreground, header, card_bg);
+            // Glyphs whose raw position (index + prefix) lies in this segment.
+            let seg: Vec<&crate::syntax::markdown::InlineGlyph> = glyphs
+                .iter()
+                .filter(|g| {
+                    let raw = g.index + prefix;
+                    raw >= seg_start && raw < seg_end
+                })
+                .collect();
+            let mut x = cx;
+            for g in seg {
+                if x >= right {
+                    break;
+                }
+                let (fg, bold) = if g.kind == StyleKind::Default {
+                    (theme.foreground, header)
+                } else {
+                    (theme.color_for(g.kind), g.bold)
+                };
+                screen.set(x, y, Cell { ch: g.ch, fg, bg: card_bg, bold, italic: g.italic });
+                x += 1;
             }
         }
     }
 }
 
-/// Draw rendered-inline glyphs from `x_start` up to (not including) `x_end`.
-fn put_glyphs(
-    screen: &mut Screen,
-    x_start: u16,
-    x_end: u16,
-    y: u16,
-    glyphs: &[crate::syntax::markdown::InlineGlyph],
-    theme: &crate::config::theme::Theme,
-    base: Color,
-    base_bold: bool,
-    bg: Color,
-) {
-    let mut x = x_start;
-    for g in glyphs {
-        if x >= x_end {
-            break;
-        }
-        let (fg, bold) = if g.kind == StyleKind::Default {
-            (base, base_bold)
-        } else {
-            (theme.color_for(g.kind), g.bold)
-        };
-        screen.set(x, y, Cell { ch: g.ch, fg, bg, bold, italic: g.italic });
-        x += 1;
-    }
-}

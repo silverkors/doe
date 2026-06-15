@@ -195,6 +195,8 @@ pub struct InlineGlyph {
     pub kind: StyleKind,
     pub bold: bool,
     pub italic: bool,
+    /// Source char index in the text passed to `rendered_inline`.
+    pub index: usize,
 }
 
 /// Render inline Markdown for preview: parse `text`, then emit only the visible
@@ -220,7 +222,7 @@ pub fn rendered_inline(text: &str) -> Vec<InlineGlyph> {
 
     (0..n)
         .filter(|&c| !is_concealed(kind[c]))
-        .map(|c| InlineGlyph { ch: chars[c], kind: kind[c], bold: bold[c], italic: ital[c] })
+        .map(|c| InlineGlyph { ch: chars[c], kind: kind[c], bold: bold[c], italic: ital[c], index: c })
         .collect()
 }
 
