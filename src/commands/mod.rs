@@ -82,6 +82,9 @@ pub enum Command {
     // Command palette (Spotlight-style action launcher)
     CommandPalette,
 
+    // View
+    ToggleSoftWrap,
+
     // Misc
     #[allow(dead_code)]
     NoOp,

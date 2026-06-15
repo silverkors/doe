@@ -3,7 +3,7 @@
 //! rendering cost is bound to what's on screen rather than file size.
 
 use super::screen::{Cell, Screen};
-use super::{layout::Layout, statusbar};
+use super::{layout::Layout, statusbar, wrap};
 use crate::app::App;
 use crate::plugins::PluginView;
 use crate::syntax::{highlighter_for, LineState, StyleKind};
@@ -34,55 +34,103 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     let mut state = LineState { in_code_block: app.top_in_code_block };
     let text_width = layout.text_width() as usize;
 
-    // --- text area ---------------------------------------------------------
-    for row in 0..layout.text_rows {
-        let ln = app.top_line + row as usize;
-        let y = row;
-        if ln >= buf.len_lines() {
-            // Tilde marker for lines past EOF (familiar, low-noise).
-            if layout.gutter > 0 {
-                screen.put_str(0, y, "~", theme.line_number, theme.background, false, false);
-            }
-            continue;
-        }
-
-        draw_gutter(screen, &layout, app, ln, cur_line, y);
-
-        let line_start = buf.rope.line_to_char(ln);
-        let line_len = buf.line_len_chars(ln);
-        let text: String = buf.rope.slice(line_start..line_start + line_len).to_string();
-
-        // Per-column style arrays.
-        let mut kinds = vec![StyleKind::Default; line_len];
-        let mut bolds = vec![false; line_len];
-        let mut itals = vec![false; line_len];
-        if settings.syntax_highlighting && line_len <= MAX_HIGHLIGHT_LINE {
-            for s in highlighter.highlight_line(&text, &mut state) {
-                for c in s.start..s.end.min(line_len) {
-                    kinds[c] = s.kind;
-                    bolds[c] = s.bold;
-                    itals[c] = s.italic;
-                }
-            }
-        }
-
-        // Matches overlapping this line (filtered once).
-        let line_end = line_start + line_len;
-        let line_matches: Vec<(usize, usize)> = app
-            .search
-            .matches
-            .iter()
-            .filter(|(s, e)| *s < line_end && *e > line_start)
-            .copied()
-            .collect();
-
-        let chars: Vec<char> = text.chars().collect();
-        for vcol in 0..text_width {
-            let col = app.left_col + vcol;
-            if col >= line_len {
+    // --- build the list of visual rows to paint ----------------------------
+    // A visual row is a slice `[start, end)` of one buffer line on one screen
+    // row. Without soft wrap there is exactly one per line (with horizontal
+    // scroll); with soft wrap a long line spans several.
+    struct VisRow {
+        line: usize,
+        start: usize,
+        end: usize,
+        y: u16,
+        gutter: bool,
+    }
+    let mut visrows: Vec<VisRow> = Vec::new();
+    if settings.soft_wrap {
+        let width = text_width.max(1);
+        let (mut vl, mut vs) = (app.top_line, app.top_subrow);
+        for row in 0..layout.text_rows {
+            if vl >= buf.len_lines() {
                 break;
             }
-            let x = layout.text_x() + vcol as u16;
+            let segs = wrap::segments(buf, vl, width);
+            let (s, e) = segs[vs.min(segs.len() - 1)];
+            visrows.push(VisRow { line: vl, start: s, end: e, y: row, gutter: vs == 0 });
+            match wrap::next_visual(buf, vl, vs, width) {
+                Some((l, ss)) => {
+                    vl = l;
+                    vs = ss;
+                }
+                None => break,
+            }
+        }
+    } else {
+        for row in 0..layout.text_rows {
+            let ln = app.top_line + row as usize;
+            if ln >= buf.len_lines() {
+                break;
+            }
+            let line_len = buf.line_len_chars(ln);
+            let s = app.left_col.min(line_len);
+            let e = (app.left_col + text_width).min(line_len);
+            visrows.push(VisRow { line: ln, start: s, end: e, y: row, gutter: true });
+        }
+    }
+
+    // --- paint visual rows -------------------------------------------------
+    // Styles are computed once per buffer line and reused across its wrapped
+    // sub-rows; the highlighter state advances once per line.
+    let mut loaded: Option<usize> = None;
+    let mut kinds: Vec<StyleKind> = Vec::new();
+    let mut bolds: Vec<bool> = Vec::new();
+    let mut itals: Vec<bool> = Vec::new();
+    let mut chars: Vec<char> = Vec::new();
+    let mut line_start = 0usize;
+    let mut line_matches: Vec<(usize, usize)> = Vec::new();
+
+    for vr in &visrows {
+        if loaded != Some(vr.line) {
+            line_start = buf.rope.line_to_char(vr.line);
+            let line_len = buf.line_len_chars(vr.line);
+            let text: String = buf.rope.slice(line_start..line_start + line_len).to_string();
+            chars = text.chars().collect();
+            kinds = vec![StyleKind::Default; line_len];
+            bolds = vec![false; line_len];
+            itals = vec![false; line_len];
+            if settings.syntax_highlighting && line_len <= MAX_HIGHLIGHT_LINE {
+                for sp in highlighter.highlight_line(&text, &mut state) {
+                    for c in sp.start..sp.end.min(line_len) {
+                        kinds[c] = sp.kind;
+                        bolds[c] = sp.bold;
+                        itals[c] = sp.italic;
+                    }
+                }
+            }
+            let line_end = line_start + line_len;
+            line_matches = app
+                .search
+                .matches
+                .iter()
+                .filter(|(s, e)| *s < line_end && *e > line_start)
+                .copied()
+                .collect();
+            loaded = Some(vr.line);
+        }
+
+        if vr.gutter {
+            draw_gutter(screen, &layout, app, vr.line, cur_line, vr.y);
+        } else {
+            // Blank continuation gutter for wrapped sub-rows.
+            for x in 0..layout.gutter {
+                screen.set(x, vr.y, Cell { ch: ' ', fg: theme.line_number, bg: theme.background, bold: false, italic: false });
+            }
+        }
+
+        for (k, col) in (vr.start..vr.end).enumerate() {
+            let x = layout.text_x() + k as u16;
+            if x >= app.width {
+                break;
+            }
             let idx = line_start + col;
             let ch = chars[col];
 
@@ -100,8 +148,6 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
             if settings.show_whitespace && is_ws {
                 fg = theme.whitespace;
             }
-
-            // Matching bracket pair (overridden by search/selection below).
             if let Some((a, b)) = bracket_pair {
                 if idx == a || idx == b {
                     bg = BRACKET_BG;
@@ -118,29 +164,44 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
                 bg = theme.selection;
             }
 
-            screen.set(x, y, Cell { ch: disp, fg, bg, bold, italic: itals[col] });
+            screen.set(x, vr.y, Cell { ch: disp, fg, bg, bold, italic: itals[col] });
+        }
+    }
+
+    // Tilde markers for screen rows past end of buffer.
+    for row in (visrows.len() as u16)..layout.text_rows {
+        if layout.gutter > 0 {
+            screen.put_str(0, row, "~", theme.line_number, theme.background, false, false);
         }
     }
 
     // --- cursors (drawn over text) ----------------------------------------
     let mut primary_screen_pos = None;
     for (i, c) in buf.cursors.iter().enumerate() {
-        let (cl, cc) = buf.pos_to_line_col(c.head);
-        if cl < app.top_line || cl >= app.top_line + layout.text_rows as usize {
+        let head = c.head.min(buf.len_chars());
+        let cl = buf.rope.char_to_line(head);
+        let ls = buf.rope.line_to_char(cl);
+        let off = head - ls;
+        // Locate the visual row containing this cursor.
+        let ri = visrows
+            .iter()
+            .position(|vr| vr.line == cl && off >= vr.start && off < vr.end)
+            .or_else(|| visrows.iter().position(|vr| vr.line == cl && off == vr.end));
+        let vr = match ri {
+            Some(r) => &visrows[r],
+            None => continue,
+        };
+        let k = off - vr.start;
+        if k >= text_width {
             continue;
         }
-        if cc < app.left_col || cc >= app.left_col + text_width {
-            continue;
-        }
-        let x = layout.text_x() + (cc - app.left_col) as u16;
-        let y = (cl - app.top_line) as u16;
+        let x = layout.text_x() + k as u16;
+        let y = vr.y;
         if i == buf.primary {
             primary_screen_pos = Some((x, y));
         } else {
-            // Render extra cursors as reverse-video blocks.
-            let ls = buf.rope.line_to_char(cl);
             let llen = buf.line_len_chars(cl);
-            let ch = if cc < llen { buf.rope.char(ls + cc) } else { ' ' };
+            let ch = if off < llen { buf.rope.char(ls + off) } else { ' ' };
             screen.set(x, y, Cell { ch, fg: theme.background, bg: theme.cursor, bold: false, italic: false });
         }
     }

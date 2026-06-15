@@ -35,6 +35,7 @@ pub fn catalog() -> &'static [PaletteAction] {
         PaletteAction { command: "undo", title: "Undo", hint: "Ctrl+Z" },
         PaletteAction { command: "redo", title: "Redo", hint: "Ctrl+Y" },
         PaletteAction { command: "toggle_comment", title: "Toggle Line Comment", hint: "Ctrl+/" },
+        PaletteAction { command: "toggle_soft_wrap", title: "Toggle Soft Wrap", hint: "Alt+Z" },
         PaletteAction { command: "toggle_bold", title: "Markdown: Bold", hint: "Ctrl+B" },
         PaletteAction { command: "toggle_italic", title: "Markdown: Italic", hint: "Ctrl+I" },
         PaletteAction { command: "select_all", title: "Select All", hint: "Ctrl+A" },

@@ -14,6 +14,7 @@ use crate::plugins::{Event, PluginRegistry};
 use crate::search::{find, SearchState};
 use crate::syntax::Language;
 use crate::ui::commandline::{CommandLine, PromptKind};
+use crate::ui::wrap;
 use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind, KeyModifiers};
 use std::path::PathBuf;
 
@@ -23,6 +24,8 @@ pub struct App {
     pub active: usize,
     pub top_line: usize,
     pub left_col: usize,
+    /// First visible visual sub-row of `top_line` (soft-wrap scroll anchor).
+    pub top_subrow: usize,
     pub command: CommandLine,
     pub palette: Palette,
     pub search: SearchState,
@@ -58,6 +61,7 @@ impl App {
             active: 0,
             top_line: 0,
             left_col: 0,
+            top_subrow: 0,
             command: CommandLine::default(),
             palette,
             search: SearchState::default(),
@@ -144,7 +148,19 @@ impl App {
         self.width.saturating_sub(self.gutter()) as usize
     }
 
+    fn soft_wrap(&self) -> bool {
+        self.config.settings.soft_wrap
+    }
+
     fn ensure_cursor_visible(&mut self) {
+        if self.soft_wrap() {
+            self.ensure_visible_wrapped();
+        } else {
+            self.ensure_visible_plain();
+        }
+    }
+
+    fn ensure_visible_plain(&mut self) {
         let rows = self.text_rows().max(1);
         let cols = self.text_cols().max(1);
         let (line, col) = {
@@ -161,6 +177,101 @@ impl App {
         } else if col >= self.left_col + cols {
             self.left_col = col + 1 - cols;
         }
+    }
+
+    fn ensure_visible_wrapped(&mut self) {
+        self.left_col = 0;
+        let width = self.text_cols().max(1);
+        let rows = self.text_rows().max(1);
+        let buf = self.active_buffer();
+        let head = buf.primary_cursor().head;
+        let (cl, cs, _) = wrap::vpos_of(buf, head, width);
+        let top = (self.top_line, self.top_subrow);
+        if (cl, cs) < top {
+            self.top_line = cl;
+            self.top_subrow = cs;
+            return;
+        }
+        // Walk back from the cursor by (rows-1) visual rows: the topmost anchor
+        // that still keeps the cursor on screen. If it's below the current top,
+        // the cursor was past the bottom, so scroll down to it.
+        let (mut bl, mut bs) = (cl, cs);
+        for _ in 0..rows.saturating_sub(1) {
+            match wrap::prev_visual(buf, bl, bs, width) {
+                Some((l, s)) => {
+                    bl = l;
+                    bs = s;
+                }
+                None => break,
+            }
+        }
+        if (bl, bs) > top {
+            self.top_line = bl;
+            self.top_subrow = bs;
+        }
+    }
+
+    // --- vertical movement (soft-wrap aware) -------------------------------
+
+    fn move_up(&mut self, extend: bool) {
+        if self.soft_wrap() {
+            self.move_visual(-1, extend);
+        } else {
+            self.active_buffer_mut().move_vertical(-1, extend);
+        }
+    }
+
+    fn move_down(&mut self, extend: bool) {
+        if self.soft_wrap() {
+            self.move_visual(1, extend);
+        } else {
+            self.active_buffer_mut().move_vertical(1, extend);
+        }
+    }
+
+    fn page(&mut self, dir: isize) {
+        let rows = self.text_rows().max(1) as isize;
+        if self.soft_wrap() {
+            self.move_visual(dir * rows, false);
+        } else {
+            self.active_buffer_mut().move_vertical(dir * rows, false);
+        }
+    }
+
+    /// Move every cursor by `delta` visual rows, preserving the goal column.
+    fn move_visual(&mut self, delta: isize, extend: bool) {
+        let width = self.text_cols().max(1);
+        let buf = &mut self.buffers[self.active];
+        buf.break_coalescing();
+        let cursors = std::mem::take(&mut buf.cursors);
+        let mut out = Vec::with_capacity(cursors.len());
+        for mut c in cursors {
+            let (line, sub, col) = wrap::vpos_of(buf, c.head, width);
+            let goal = c.goal_col.unwrap_or(col);
+            let (mut tl, mut ts) = (line, sub);
+            for _ in 0..delta.unsigned_abs() {
+                let next = if delta < 0 {
+                    wrap::prev_visual(buf, tl, ts, width)
+                } else {
+                    wrap::next_visual(buf, tl, ts, width)
+                };
+                match next {
+                    Some((l, s)) => {
+                        tl = l;
+                        ts = s;
+                    }
+                    None => break,
+                }
+            }
+            let pos = wrap::pos_at(buf, tl, ts, goal, width);
+            c.head = pos;
+            if !extend {
+                c.anchor = pos;
+            }
+            c.goal_col = Some(goal);
+            out.push(c);
+        }
+        buf.replace_cursors(out);
     }
 
     // --- input -------------------------------------------------------------
@@ -327,13 +438,8 @@ impl App {
             return;
         }
         match ev.kind {
-            MouseEventKind::ScrollDown => {
-                let max = self.active_buffer().len_lines().saturating_sub(1);
-                self.top_line = (self.top_line + 3).min(max);
-            }
-            MouseEventKind::ScrollUp => {
-                self.top_line = self.top_line.saturating_sub(3);
-            }
+            MouseEventKind::ScrollDown => self.scroll(3),
+            MouseEventKind::ScrollUp => self.scroll(-3),
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(pos) = self.mouse_to_pos(ev.column, ev.row) {
                     let extra = ev.modifiers.contains(KeyModifiers::CONTROL)
@@ -357,20 +463,70 @@ impl App {
         }
     }
 
+    /// Scroll the viewport by `delta` rows (visual rows when wrapping).
+    fn scroll(&mut self, delta: isize) {
+        if self.soft_wrap() {
+            let width = self.text_cols().max(1);
+            let buf = self.active_buffer();
+            let (mut l, mut s) = (self.top_line, self.top_subrow);
+            for _ in 0..delta.unsigned_abs() {
+                let next = if delta < 0 {
+                    wrap::prev_visual(buf, l, s, width)
+                } else {
+                    wrap::next_visual(buf, l, s, width)
+                };
+                match next {
+                    Some((nl, ns)) => {
+                        l = nl;
+                        s = ns;
+                    }
+                    None => break,
+                }
+            }
+            self.top_line = l;
+            self.top_subrow = s;
+        } else if delta < 0 {
+            self.top_line = self.top_line.saturating_sub(delta.unsigned_abs());
+        } else {
+            let max = self.active_buffer().len_lines().saturating_sub(1);
+            self.top_line = (self.top_line + delta as usize).min(max);
+        }
+    }
+
     /// Map a terminal cell to a buffer char position, or `None` if outside the
     /// text area.
     fn mouse_to_pos(&self, col: u16, row: u16) -> Option<usize> {
         let gutter = self.gutter();
-        if row as usize >= self.text_rows() || col < gutter {
+        if row as usize >= self.text_rows() {
             return None;
         }
-        let line = self.top_line + row as usize;
-        let b = self.active_buffer();
-        if line >= b.len_lines() {
-            return Some(b.len_chars());
+        if self.soft_wrap() {
+            let width = self.text_cols().max(1);
+            let buf = self.active_buffer();
+            let char_col = col.saturating_sub(gutter) as usize;
+            let (mut l, mut s) = (self.top_line, self.top_subrow);
+            for _ in 0..row {
+                match wrap::next_visual(buf, l, s, width) {
+                    Some((nl, ns)) => {
+                        l = nl;
+                        s = ns;
+                    }
+                    None => return Some(buf.len_chars()),
+                }
+            }
+            Some(wrap::pos_at(buf, l, s, char_col, width))
+        } else {
+            if col < gutter {
+                return None;
+            }
+            let line = self.top_line + row as usize;
+            let b = self.active_buffer();
+            if line >= b.len_lines() {
+                return Some(b.len_chars());
+            }
+            let char_col = self.left_col + (col - gutter) as usize;
+            Some(b.line_col_to_pos(line, char_col))
         }
-        let char_col = self.left_col + (col - gutter) as usize;
-        Some(b.line_col_to_pos(line, char_col))
     }
 
     // --- command execution -------------------------------------------------
@@ -460,30 +616,22 @@ impl App {
             // Movement
             Command::MoveLeft => { self.active_buffer_mut().move_left(false); moved = true; }
             Command::MoveRight => { self.active_buffer_mut().move_right(false); moved = true; }
-            Command::MoveUp => { self.active_buffer_mut().move_vertical(-1, false); moved = true; }
-            Command::MoveDown => { self.active_buffer_mut().move_vertical(1, false); moved = true; }
+            Command::MoveUp => { self.move_up(false); moved = true; }
+            Command::MoveDown => { self.move_down(false); moved = true; }
             Command::MoveWordLeft => { self.active_buffer_mut().move_word_left(false); moved = true; }
             Command::MoveWordRight => { self.active_buffer_mut().move_word_right(false); moved = true; }
             Command::MoveLineStart => { self.active_buffer_mut().move_line_start(false); moved = true; }
             Command::MoveLineEnd => { self.active_buffer_mut().move_line_end(false); moved = true; }
             Command::MoveBufferStart => { self.active_buffer_mut().move_buffer_start(false); moved = true; }
             Command::MoveBufferEnd => { self.active_buffer_mut().move_buffer_end(false); moved = true; }
-            Command::PageUp => {
-                let d = self.text_rows().max(1) as isize;
-                self.active_buffer_mut().move_vertical(-d, false);
-                moved = true;
-            }
-            Command::PageDown => {
-                let d = self.text_rows().max(1) as isize;
-                self.active_buffer_mut().move_vertical(d, false);
-                moved = true;
-            }
+            Command::PageUp => { self.page(-1); moved = true; }
+            Command::PageDown => { self.page(1); moved = true; }
 
             // Selection
             Command::ExtendLeft => { self.active_buffer_mut().move_left(true); moved = true; }
             Command::ExtendRight => { self.active_buffer_mut().move_right(true); moved = true; }
-            Command::ExtendUp => { self.active_buffer_mut().move_vertical(-1, true); moved = true; }
-            Command::ExtendDown => { self.active_buffer_mut().move_vertical(1, true); moved = true; }
+            Command::ExtendUp => { self.move_up(true); moved = true; }
+            Command::ExtendDown => { self.move_down(true); moved = true; }
             Command::SelectAll => { self.active_buffer_mut().select_all(); moved = true; }
             Command::SelectLine => { self.active_buffer_mut().select_line(); moved = true; }
             Command::CollapseSelection => { self.active_buffer_mut().collapse_selections(); moved = true; }
@@ -536,6 +684,16 @@ impl App {
 
             // Command palette
             Command::CommandPalette => self.palette.open(),
+
+            // View
+            Command::ToggleSoftWrap => {
+                self.config.settings.soft_wrap = !self.config.settings.soft_wrap;
+                self.top_subrow = 0;
+                self.left_col = 0;
+                self.ensure_cursor_visible();
+                let state = if self.config.settings.soft_wrap { "on" } else { "off" };
+                self.set_status(format!("soft wrap {state}"));
+            }
 
             Command::NoOp => {}
         }
@@ -612,6 +770,7 @@ impl App {
         if let Some(i) = self.buffers.iter().position(|b| b.path.as_deref() == Some(path.as_path())) {
             self.active = i;
             self.top_line = 0;
+            self.top_subrow = 0;
             self.left_col = 0;
             self.ensure_cursor_visible();
             return;
@@ -621,6 +780,7 @@ impl App {
                 self.buffers.push(b);
                 self.active = self.buffers.len() - 1;
                 self.top_line = 0;
+                self.top_subrow = 0;
                 self.left_col = 0;
                 self.set_status(format!("opened {}", files::display_path(&path)));
                 self.plugins.dispatch(&Event::OpenFile(path));
@@ -634,6 +794,7 @@ impl App {
         let n = self.buffers.len() as isize;
         self.active = (((self.active as isize + delta) % n + n) % n) as usize;
         self.top_line = 0;
+        self.top_subrow = 0;
         self.left_col = 0;
         self.disk_warned = false;
         self.ensure_cursor_visible();
@@ -653,6 +814,7 @@ impl App {
             }
         }
         self.top_line = 0;
+        self.top_subrow = 0;
         self.left_col = 0;
     }
 

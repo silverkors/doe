@@ -81,6 +81,7 @@ pub fn parse(input: &str) -> Option<Command> {
         "close_buffer" => Command::CloseBuffer,
 
         "command_palette" => Command::CommandPalette,
+        "toggle_soft_wrap" => Command::ToggleSoftWrap,
 
         _ => return None,
     };

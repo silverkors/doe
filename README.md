@@ -27,6 +27,9 @@ doe a.md b.rs c.toml   # open several files as buffers
   smart-case, `:replace_all from to`.
 - **Mouse** — click to place cursor, drag to select, scroll wheel,
   `Ctrl/Alt+click` to add a cursor.
+- **Soft wrap** — on by default (great for Markdown/prose); long lines wrap at
+  word boundaries and `↑`/`↓` move by visual row. Toggle with `Alt+Z` or set
+  `soft_wrap = false`.
 - **Multiple buffers**, status bar, line numbers (absolute or relative).
 - **Configurable** keybindings, settings and themes — no recompile needed.
 - **Incremental rendering** — a diffing cell grid redraws only changed cells.
@@ -58,6 +61,7 @@ point is a fast, fuzzy command palette:
 | `Ctrl+D` | select word / add next occurrence | `Alt+F3` | select all occurrences |
 | `Ctrl+/` | toggle comment | `Esc` | clear extra cursors |
 | `Ctrl+O` | open file | `Ctrl+End` / `Ctrl+Home` | end / start of file |
+| `Alt+Z` | toggle soft wrap | | |
 
 Everything else lives in the palette.
 

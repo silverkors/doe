@@ -7,5 +7,6 @@ pub mod palette;
 pub mod renderer;
 pub mod screen;
 pub mod statusbar;
+pub mod wrap;
 
 pub use screen::Screen;

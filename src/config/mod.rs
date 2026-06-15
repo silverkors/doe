@@ -46,7 +46,7 @@ impl Default for Settings {
             insert_spaces: true,
             mouse: true,
             syntax_highlighting: true,
-            soft_wrap: false,
+            soft_wrap: true,
             show_whitespace: false,
             trim_trailing_whitespace_on_save: false,
         }
@@ -146,6 +146,7 @@ fn default_keybindings() -> Keybindings {
         ("ctrl-l", "select_line"),
         ("alt-f3", "select_all_matches"),
         ("ctrl-slash", "toggle_comment"),
+        ("alt-z", "toggle_soft_wrap"),
         ("ctrl-pageup", "prev_buffer"),
         ("ctrl-pagedown", "next_buffer"),
         ("alt-up", "add_cursor_above"),
@@ -207,7 +208,7 @@ tab_width = 4
 insert_spaces = true
 mouse = true
 syntax_highlighting = true
-soft_wrap = false
+soft_wrap = true
 show_whitespace = false
 trim_trailing_whitespace_on_save = false
 

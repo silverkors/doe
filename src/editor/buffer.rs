@@ -692,6 +692,24 @@ impl Buffer {
         self.normalize();
     }
 
+    /// Replace the cursor set wholesale, then normalize (clamp + dedup). Used by
+    /// the app for soft-wrap-aware vertical movement, which needs viewport width.
+    pub fn replace_cursors(&mut self, cursors: Vec<Cursor>) {
+        if cursors.is_empty() {
+            return;
+        }
+        self.cursors = cursors;
+        if self.primary >= self.cursors.len() {
+            self.primary = self.cursors.len() - 1;
+        }
+        self.normalize();
+    }
+
+    /// Break undo coalescing (e.g. after a cursor move).
+    pub fn break_coalescing(&mut self) {
+        self.history.break_coalescing();
+    }
+
     // --- markdown helpers --------------------------------------------------
 
     pub fn toggle_wrap(&mut self, marker: &str) {
