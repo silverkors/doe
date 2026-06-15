@@ -4,11 +4,19 @@ A fast, memory-safe terminal text editor written in Rust, with first-class
 Markdown support, multi-cursor editing (Sublime-style), configurable
 keybindings, mouse support and a plugin architecture.
 
+> [!note]
+> Open this file in DOE (`doe README.md`) and the callouts below render as
+> live preview cards — move the cursor onto one to edit its raw source.
+
 ```sh
 doe README.md          # open a file
 doe                    # start with an empty buffer
 doe a.md b.rs c.toml   # open several files as buffers
 ```
+
+> [!tip]
+> Press `Ctrl+P` for the command palette and `Ctrl+,` for the settings panel —
+> you rarely need to remember any other shortcut.
 
 ## Features (v0.1 MVP)
 
@@ -152,3 +160,8 @@ Written without `unsafe` Rust.
   Git status, context-aware palette ranking, and **dynamic documents** —
   runnable embedded code (Lua/Python/WASM) via sandboxed plugins
   ([design sketch](docs/dynamic-documents.md)).
+
+> [!warning]
+> Dynamic documents are a **design sketch only** — executing document code is
+> arbitrary code execution, so it stays off by default and behind per-folder
+> trust and a default-deny sandbox. See the linked design before relying on it.
