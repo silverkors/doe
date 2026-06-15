@@ -17,7 +17,12 @@ doe a.md b.rs c.toml   # open several files as buffers
 - **Markdown highlighting** — headings, lists, block quotes, fenced code,
   links, inline code, **bold**/*italic*, with dimmed markup punctuation.
   Also **callouts** (`> [!note] Title` — accent bar, dimmed `[!type]`, styled
-  title and body) and inline **HTML/XML tags** (`<font color="…">`).
+  title and body) and inline **HTML/XML tags** (`<font color="…">`). Callouts
+  get a **live preview**: decorated when the cursor is elsewhere, raw source
+  when you're editing them.
+- **Settings panel** — `Ctrl+,` (or the palette) opens a modal to change
+  preferences (theme, wrap, tab width, …) by navigating and toggling; changes
+  apply live and save to `config.toml`. No need to hand-edit anything.
 - **Code highlighting** — Rust, Python, JS/TS, HTML/XML, CSS, JSON, TOML, YAML,
   Swift (keyword/string/comment/number, keyword-driven for now).
 - **Multi-cursor** — add cursor on next match (`Ctrl+D`), above/below
@@ -84,7 +89,7 @@ point is a fast, fuzzy command palette:
 | `Ctrl+D` | select word / add next occurrence | `Alt+F3` | select all occurrences |
 | `Ctrl+/` | toggle comment | `Esc` | clear extra cursors |
 | `Ctrl+O` | fuzzy file picker | `Ctrl+End` / `Ctrl+Home` | end / start of file |
-| `Alt+Z` | toggle soft wrap | | |
+| `Alt+Z` | toggle soft wrap | `Ctrl+,` | settings panel |
 
 Everything else lives in the palette.
 
@@ -144,4 +149,6 @@ Written without `unsafe` Rust.
 - **0.2:** modeless editing + command palette ✓, bracket matching ✓, soft
   wrap ✓, fuzzy file picker (with fs navigation) ✓, crash recovery/autosave ✓.
 - **0.3:** tree-sitter highlighting, WASM sandboxed plugins, project view,
-  Git status, context-aware palette ranking.
+  Git status, context-aware palette ranking, and **dynamic documents** —
+  runnable embedded code (Lua/Python/WASM) via sandboxed plugins
+  ([design sketch](docs/dynamic-documents.md)).
