@@ -27,6 +27,12 @@ pub struct Buffer {
     pub cursors: Vec<Cursor>,
     pub primary: usize,
     pub language: Language,
+    /// Monotonic edit counter, used to detect when a recovery backup is stale.
+    pub revision: u64,
+    /// Revision last written to the recovery backup (not persisted).
+    pub backup_rev: u64,
+    /// Stable id used for this buffer's recovery backup filename.
+    pub recovery_id: u64,
     history: History,
     disk_mtime: Option<SystemTime>,
 }
@@ -40,6 +46,9 @@ impl Buffer {
             cursors: vec![Cursor::new(0)],
             primary: 0,
             language: Language::PlainText,
+            revision: 0,
+            backup_rev: 0,
+            recovery_id: 0,
             history: History::new(),
             disk_mtime: None,
         }
@@ -61,9 +70,27 @@ impl Buffer {
             modified: false,
             cursors: vec![Cursor::new(0)],
             primary: 0,
+            revision: 0,
+            backup_rev: 0,
+            recovery_id: 0,
             history: History::new(),
             disk_mtime: mtime,
         })
+    }
+
+    fn mark_modified(&mut self) {
+        self.modified = true;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Replace the entire contents (used to restore recovered/unsaved content).
+    /// Marks the buffer modified so it can be saved to its file or a new one.
+    pub fn set_text(&mut self, text: &str) {
+        self.rope = Rope::from_str(text);
+        self.cursors = vec![Cursor::new(0)];
+        self.primary = 0;
+        self.history = History::new();
+        self.mark_modified();
     }
 
     // --- queries -----------------------------------------------------------
@@ -207,7 +234,7 @@ impl Buffer {
             self.rope = prev.rope;
             self.cursors = prev.cursors;
             self.primary = self.primary.min(self.cursors.len() - 1);
-            self.modified = true;
+            self.mark_modified();
             true
         } else {
             false
@@ -220,7 +247,7 @@ impl Buffer {
             self.rope = next.rope;
             self.cursors = next.cursors;
             self.primary = self.primary.min(self.cursors.len() - 1);
-            self.modified = true;
+            self.mark_modified();
             true
         } else {
             false
@@ -256,7 +283,7 @@ impl Buffer {
             c.anchor = new_heads[i];
             c.goal_col = None;
         }
-        self.modified = true;
+        self.mark_modified();
         self.normalize();
     }
 
@@ -757,7 +784,7 @@ impl Buffer {
                 self.cursors = vec![nc];
             }
             self.primary = 0;
-            self.modified = true;
+            self.mark_modified();
         } else {
             // Insert empty markers and place the cursor between them.
             let pos = c.head;
@@ -766,7 +793,7 @@ impl Buffer {
             self.rope.insert(pos, &pair);
             self.cursors = vec![Cursor::new(pos + mlen)];
             self.primary = 0;
-            self.modified = true;
+            self.mark_modified();
         }
     }
 
@@ -824,7 +851,7 @@ impl Buffer {
                 self.rope.insert(insert_at, &format!("{prefix} "));
             }
         }
-        self.modified = true;
+        self.mark_modified();
         self.clamp_cursors();
     }
 
@@ -894,7 +921,7 @@ impl Buffer {
         let pos = sorted[0].0 + to.chars().count();
         self.cursors = vec![Cursor::new(pos.min(self.rope.len_chars()))];
         self.primary = 0;
-        self.modified = true;
+        self.mark_modified();
     }
 
     pub fn trim_trailing_whitespace(&mut self) {
@@ -918,7 +945,7 @@ impl Buffer {
         }
         if changed {
             self.clamp_cursors();
-            self.modified = true;
+            self.mark_modified();
         }
     }
 

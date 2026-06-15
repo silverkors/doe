@@ -112,6 +112,57 @@ impl FilePicker {
         }
     }
 
+    /// Tab: descend into the selected directory if one is highlighted; otherwise
+    /// (path mode) complete the path, or (search mode) advance the selection.
+    pub fn tab(&mut self) {
+        if self.enter_selected_dir() {
+            return;
+        }
+        self.complete();
+    }
+
+    fn enter_selected_dir(&mut self) -> bool {
+        if let Some(r) = self.results.get(self.selected) {
+            if let Activate::EnterDir(d) = &r.action {
+                self.query = d.clone();
+                self.selected = 0;
+                self.update();
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Left arrow: go back out of a directory. From the default view it starts
+    /// browsing the working directory; while browsing it drops a half-typed name
+    /// first, then climbs to the parent directory.
+    pub fn go_up(&mut self) {
+        let q = self.query.clone();
+        if !q.is_empty() && !is_path_like(&q) {
+            return; // Left has no meaning during a plain search.
+        }
+        if q.is_empty() {
+            self.query = "./".to_string();
+            self.selected = 0;
+            self.update();
+            return;
+        }
+        if !q.ends_with('/') {
+            let dp = dir_prefix(&q);
+            if q.len() > dp.len() {
+                // Drop the partially-typed name, staying in the same directory.
+                self.query = if dp.is_empty() { "./".to_string() } else { dp };
+                self.selected = 0;
+                self.update();
+                return;
+            }
+        }
+        let base = if q.ends_with('/') { q.clone() } else { dir_prefix(&q) };
+        self.query = parent_dir_str(&base);
+        self.selected = 0;
+        self.update();
+    }
+
     /// Tab completion. In path mode, complete the typed path toward the matching
     /// directory entries: a unique match completes fully (directories gain a
     /// trailing `/` so you descend straight in), multiple matches complete to
@@ -387,6 +438,23 @@ fn dir_prefix(q: &str) -> String {
     }
 }
 
+/// The parent directory of a directory string (which ends in `/`), preserving
+/// the relative/absolute style the user typed.
+fn parent_dir_str(base: &str) -> String {
+    let trimmed = base.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return "/".to_string(); // already at the filesystem root
+    }
+    match trimmed.rfind('/') {
+        Some(i) => trimmed[..=i].to_string(),
+        None => match trimmed {
+            "." => "../".to_string(),
+            ".." => "../../".to_string(),
+            _ => "./".to_string(), // a single relative component → working dir
+        },
+    }
+}
+
 /// A friendly display path: relative to `root` when possible, else `~`-relative.
 fn nice(p: &Path, root: &Path) -> String {
     if let Ok(rel) = p.strip_prefix(root) {
@@ -489,6 +557,32 @@ mod tests {
         p.accept(); // expand
         assert_eq!(p.results.iter().filter(|r| r.hint == "recent").count(), 12);
         assert!(!p.results.iter().any(|r| matches!(r.action, Activate::ExpandRecent)));
+    }
+
+    #[test]
+    fn go_up_navigates_out_of_directories() {
+        let mut p = FilePicker { root: PathBuf::from("/proj"), ..Default::default() };
+        p.query = "src/foo".into();
+        p.go_up();
+        assert_eq!(p.query, "src/"); // drop the half-typed name first
+        p.go_up();
+        assert_eq!(p.query, "./"); // src/ -> working dir
+        p.go_up();
+        assert_eq!(p.query, "../"); // ./ -> parent
+        p.query = "/Users/david/".into();
+        p.go_up();
+        assert_eq!(p.query, "/Users/");
+        p.query = String::new();
+        p.go_up();
+        assert_eq!(p.query, "./"); // from default view, start browsing cwd
+    }
+
+    #[test]
+    fn go_up_ignored_during_plain_search() {
+        let mut p = FilePicker { root: PathBuf::from("/proj"), ..Default::default() };
+        p.query = "main".into();
+        p.go_up();
+        assert_eq!(p.query, "main"); // unchanged: not a path
     }
 
     #[test]

@@ -113,7 +113,11 @@ impl Config {
 /// The DOE config directory. Per spec this is `~/.config/doe` on Linux/macOS
 /// and `%APPDATA%/doe` on Windows (note: macOS `dirs::config_dir()` would give
 /// `~/Library/Application Support`, which we deliberately don't use here).
+/// `DOE_CONFIG_DIR` overrides it (useful for sandboxing or custom locations).
 fn config_base_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("DOE_CONFIG_DIR") {
+        return PathBuf::from(dir);
+    }
     #[cfg(windows)]
     {
         dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("doe")

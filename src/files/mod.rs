@@ -3,6 +3,7 @@
 //! module holds path utilities shared across the editor.
 
 pub mod picker;
+pub mod recovery;
 
 use std::path::{Path, PathBuf};
 

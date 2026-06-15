@@ -25,7 +25,10 @@ use crossterm::event::{
 use crossterm::{cursor, execute, terminal};
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// How often, at most, to flush modified buffers to the recovery store.
+const AUTOSAVE_INTERVAL: Duration = Duration::from_millis(750);
 use ui::renderer;
 use ui::Screen;
 
@@ -101,6 +104,7 @@ fn run(app: &mut App) -> Result<()> {
 
     let mut screen = Screen::new();
     let mut out = io::stdout();
+    let mut last_autosave = Instant::now();
 
     loop {
         app.recompute_fence_state();
@@ -128,6 +132,13 @@ fn run(app: &mut App) -> Result<()> {
             }
         } else {
             app.check_external_changes();
+        }
+
+        // Throttled invisible autosave to the recovery store. Skipped when
+        // quitting so a clean exit's recovery cleanup is not re-created.
+        if !app.should_quit && last_autosave.elapsed() >= AUTOSAVE_INTERVAL {
+            app.autosave();
+            last_autosave = Instant::now();
         }
     }
     Ok(())

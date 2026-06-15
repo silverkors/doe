@@ -9,6 +9,7 @@ use crate::config::Config;
 use crate::editor::Buffer;
 use crate::files;
 use crate::files::picker::FilePicker;
+use crate::files::recovery::{Recovery, SessEntry, Session};
 use crate::input::keymap;
 use crate::input::mouse::gutter_width;
 use crate::plugins::{Event, PluginRegistry};
@@ -17,7 +18,7 @@ use crate::syntax::Language;
 use crate::ui::commandline::{CommandLine, PromptKind};
 use crate::ui::wrap;
 use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind, KeyModifiers};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct App {
     pub config: Config,
@@ -40,28 +41,76 @@ pub struct App {
     /// from the lines above the viewport so highlighting stays correct when the
     /// opening fence has scrolled off the top.
     pub top_in_code_block: bool,
+    recovery: Recovery,
+    next_recovery_id: u64,
     quit_confirm: bool,
     disk_warned: bool,
 }
 
+/// Buffers larger than this are not backed up (autosaving a huge file on every
+/// edit would stall); their on-disk content is the recovery point.
+const MAX_BACKUP_CHARS: usize = 5_000_000;
+
 impl App {
     pub fn new(config: Config, files: Vec<PathBuf>) -> Self {
-        let mut buffers = Vec::new();
-        for f in &files {
-            match Buffer::from_file(f) {
-                Ok(b) => buffers.push(b),
-                Err(e) => eprintln!("doe: {e:#}"),
+        let recovery = Recovery::new(&config.config_dir);
+        let session = recovery.read_session();
+        let mut next_recovery_id = 1u64;
+        let mut active = 0usize;
+        let mut buffers: Vec<Buffer> = Vec::new();
+        let mut recovered = false;
+
+        if !files.is_empty() {
+            // Open the requested files; restore any unsaved changes for them.
+            for f in &files {
+                match Buffer::from_file(f) {
+                    Ok(mut b) => {
+                        b.recovery_id = next_recovery_id;
+                        next_recovery_id += 1;
+                        if let Some(content) = backup_for_path(&recovery, &session, f) {
+                            b.set_text(&content);
+                            recovered = true;
+                        }
+                        buffers.push(b);
+                    }
+                    Err(e) => eprintln!("doe: {e:#}"),
+                }
             }
+        } else if let Some(sess) = &session {
+            // No files given and a recovery session exists (unclean exit):
+            // reopen the previous buffers and restore their unsaved content.
+            for e in &sess.buffers {
+                let mut b = match &e.path {
+                    Some(p) => Buffer::from_file(Path::new(p)).unwrap_or_else(|_| Buffer::empty()),
+                    None => Buffer::empty(),
+                };
+                b.recovery_id = e.id;
+                next_recovery_id = next_recovery_id.max(e.id + 1);
+                if e.has_backup {
+                    if let Some(content) = recovery.read_backup(e.id) {
+                        b.set_text(&content);
+                        b.backup_rev = b.revision; // already on disk
+                        recovered = true;
+                    }
+                }
+                buffers.push(b);
+            }
+            active = sess.active.min(buffers.len().saturating_sub(1));
         }
+
         if buffers.is_empty() {
-            buffers.push(Buffer::empty());
+            let mut b = Buffer::empty();
+            b.recovery_id = next_recovery_id;
+            next_recovery_id += 1;
+            buffers.push(b);
         }
+
         let palette = Palette::new(&config.config_dir);
         let file_picker = FilePicker::new(&config.config_dir);
         let mut app = App {
             config,
             buffers,
-            active: 0,
+            active,
             top_line: 0,
             left_col: 0,
             top_subrow: 0,
@@ -75,17 +124,58 @@ impl App {
             height: 24,
             should_quit: false,
             top_in_code_block: false,
+            recovery,
+            next_recovery_id,
             quit_confirm: false,
             disk_warned: false,
         };
-        if let Some(p) = app.active_buffer().path.clone() {
-            app.plugins.dispatch(&Event::OpenFile(p));
-        }
         let opened: Vec<PathBuf> = app.buffers.iter().filter_map(|b| b.path.clone()).collect();
+        for p in &opened {
+            app.plugins.dispatch(&Event::OpenFile(p.clone()));
+        }
         for p in opened {
             app.file_picker.record_open(&p);
         }
+        if recovered {
+            app.set_status("recovered unsaved changes from a previous session");
+        }
         app
+    }
+
+    fn fresh_recovery_id(&mut self) -> u64 {
+        let id = self.next_recovery_id;
+        self.next_recovery_id += 1;
+        id
+    }
+
+    /// Mirror modified buffers into the recovery store (invisible autosave).
+    pub fn autosave(&mut self) {
+        self.recovery.ensure_dir();
+        let active = self.active;
+        let mut entries: Vec<SessEntry> = Vec::new();
+        for buf in &mut self.buffers {
+            // Skip blank, never-saved scratch buffers.
+            if buf.path.is_none() && buf.len_chars() == 0 {
+                continue;
+            }
+            let mut has_backup = false;
+            if buf.modified && buf.len_chars() <= MAX_BACKUP_CHARS {
+                if buf.revision != buf.backup_rev
+                    && self.recovery.write_backup(buf.recovery_id, &buf.rope).is_ok()
+                {
+                    buf.backup_rev = buf.revision;
+                }
+                has_backup = true;
+            } else if !buf.modified {
+                self.recovery.remove_backup(buf.recovery_id);
+            }
+            entries.push(SessEntry {
+                id: buf.recovery_id,
+                path: buf.path.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                has_backup,
+            });
+        }
+        self.recovery.write_session(&Session { active, buffers: entries });
     }
 
     pub fn active_buffer(&self) -> &Buffer {
@@ -378,7 +468,8 @@ impl App {
             },
             Up | BackTab => self.file_picker.move_selection(-1),
             Down => self.file_picker.move_selection(1),
-            Tab => self.file_picker.complete(),
+            Tab => self.file_picker.tab(),
+            Left => self.file_picker.go_up(),
             Backspace => {
                 self.file_picker.query.pop();
                 self.file_picker.update();
@@ -754,10 +845,12 @@ impl App {
         self.buffers.iter().any(|b| b.modified)
     }
 
-    /// Persist palette usage + recent files, notify plugins, and request exit.
+    /// Persist palette usage + recent files, clear the recovery store (clean
+    /// exit), notify plugins, and request exit.
     fn shutdown(&mut self) {
         self.palette.save();
         self.file_picker.save();
+        self.recovery.clear();
         self.plugins.dispatch(&Event::Exit);
         self.should_quit = true;
     }
@@ -811,7 +904,8 @@ impl App {
             return;
         }
         match Buffer::from_file(&path) {
-            Ok(b) => {
+            Ok(mut b) => {
+                b.recovery_id = self.fresh_recovery_id();
                 self.buffers.push(b);
                 self.active = self.buffers.len() - 1;
                 self.top_line = 0;
@@ -841,9 +935,12 @@ impl App {
             return;
         }
         if self.buffers.len() == 1 {
-            self.buffers[0] = Buffer::empty();
+            let mut b = Buffer::empty();
+            b.recovery_id = self.fresh_recovery_id();
+            self.buffers[0] = b;
         } else {
-            self.buffers.remove(self.active);
+            let closed = self.buffers.remove(self.active);
+            self.recovery.remove_backup(closed.recovery_id);
             if self.active >= self.buffers.len() {
                 self.active = self.buffers.len() - 1;
             }
@@ -907,4 +1004,24 @@ fn line_is_fence(line: ropey::RopeSlice) -> bool {
         _ => return false,
     };
     chars.next() == Some(first) && chars.next() == Some(first)
+}
+
+/// Find the recovery backup for a specific file path in a saved session.
+fn backup_for_path(recovery: &Recovery, session: &Option<Session>, path: &Path) -> Option<String> {
+    let sess = session.as_ref()?;
+    let target = path.canonicalize().ok();
+    for e in &sess.buffers {
+        if !e.has_backup {
+            continue;
+        }
+        let p = e.path.as_ref()?;
+        let same = match &target {
+            Some(t) => std::path::Path::new(p).canonicalize().ok().as_ref() == Some(t),
+            None => std::path::Path::new(p) == path,
+        };
+        if same {
+            return recovery.read_backup(e.id);
+        }
+    }
+    None
 }

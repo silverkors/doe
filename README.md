@@ -30,6 +30,10 @@ doe a.md b.rs c.toml   # open several files as buffers
 - **Soft wrap** — on by default (great for Markdown/prose); long lines wrap at
   word boundaries and `↑`/`↓` move by visual row. Toggle with `Alt+Z` or set
   `soft_wrap = false`.
+- **Crash recovery** — an invisible autosave continuously mirrors open buffers
+  to a recovery store. If DOE is killed unexpectedly, relaunching restores the
+  open files *and* their unsaved changes (including never-saved buffers, which
+  you can then Save As). A clean exit clears the store.
 - **Multiple buffers**, status bar, line numbers (absolute or relative).
 - **Configurable** keybindings, settings and themes — no recompile needed.
 - **Incremental rendering** — a diffing cell grid redraws only changed cells.
@@ -57,9 +61,8 @@ point is a fast, fuzzy command palette:
   (the working dir is scanned, skipping `.git`/`target`/`node_modules`/`dist`/
   `build`/hidden).
 - **Filesystem navigation** — type a path (anything with `/`, or starting `~`
-  `.` `/`) to browse: pick a directory to descend, a file to open. `Tab`
-  autocompletes the path (unique match completes fully and descends into
-  directories; otherwise to the longest common prefix).
+  `.` `/`) to browse: `Tab` (or `Enter`) descends into the selected directory,
+  `←` goes back out, and `Tab` autocompletes a half-typed name.
 - **Arbitrary paths & new files** — the first row in path mode opens exactly
   what you typed (existing or new, inside or outside the tree); in search mode
   an unmatched name offers to create it.
@@ -84,7 +87,8 @@ Everything else lives in the palette.
 ## Configuration
 
 `~/.config/doe/config.toml` (created on first run), themes in
-`~/.config/doe/themes/<name>.toml`. DOE is modeless, so there is a single
+`~/.config/doe/themes/<name>.toml` (set `DOE_CONFIG_DIR` to use another
+location). DOE is modeless, so there is a single
 `[keybindings.global]` context; bindings are merged over the built-in
 defaults, so you only specify overrides:
 
@@ -134,6 +138,6 @@ Written without `unsafe` Rust.
 ## Roadmap
 
 - **0.2:** modeless editing + command palette ✓, bracket matching ✓, soft
-  wrap ✓, fuzzy file picker ✓.
+  wrap ✓, fuzzy file picker (with fs navigation) ✓, crash recovery/autosave ✓.
 - **0.3:** tree-sitter highlighting, WASM sandboxed plugins, project view,
-  Git status, autosave/recovery, context-aware palette ranking.
+  Git status, context-aware palette ranking.
