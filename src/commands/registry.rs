@@ -79,8 +79,10 @@ pub fn parse(input: &str) -> Option<Command> {
         "next_buffer" => Command::NextBuffer,
         "prev_buffer" => Command::PrevBuffer,
         "close_buffer" => Command::CloseBuffer,
+        "goto_buffer" => Command::GotoBuffer(rest.parse::<usize>().ok()?.saturating_sub(1)),
 
         "command_palette" => Command::CommandPalette,
+        "open_buffers" | "buffers" => Command::OpenBuffers,
         "toggle_soft_wrap" => Command::ToggleSoftWrap,
         "settings" | "preferences" => Command::Settings,
 

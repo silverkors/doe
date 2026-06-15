@@ -16,6 +16,7 @@ use crate::plugins::{Event, PluginRegistry};
 use crate::search::{find, SearchState};
 use crate::syntax::Language;
 use crate::ui::commandline::{CommandLine, PromptKind};
+use crate::ui::modal::{BufferTab, ModalTab};
 use crate::ui::settings::{self, SettingsPanel};
 use crate::ui::wrap;
 use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind, KeyModifiers};
@@ -32,6 +33,9 @@ pub struct App {
     pub command: CommandLine,
     pub palette: Palette,
     pub file_picker: FilePicker,
+    pub buffer_tab: BufferTab,
+    pub modal_open: bool,
+    pub modal_tab: ModalTab,
     pub settings_panel: SettingsPanel,
     pub search: SearchState,
     pub status_message: String,
@@ -136,6 +140,9 @@ impl App {
             command: CommandLine::default(),
             palette,
             file_picker,
+            buffer_tab: BufferTab::default(),
+            modal_open: false,
+            modal_tab: ModalTab::Commands,
             settings_panel: SettingsPanel::default(),
             search: SearchState::default(),
             status_message: String::new(),
@@ -393,12 +400,8 @@ impl App {
             self.handle_settings_key(ev);
             return;
         }
-        if self.palette.open {
-            self.handle_palette_key(ev);
-            return;
-        }
-        if self.file_picker.open {
-            self.handle_file_picker_key(ev);
+        if self.modal_open {
+            self.handle_modal_key(ev);
             return;
         }
         if self.command.active {
@@ -443,19 +446,84 @@ impl App {
         registry::parse(resolved)
     }
 
-    /// Key handling while the command palette is open.
-    fn handle_palette_key(&mut self, ev: KeyEvent) {
+    // --- the unified modal (Commands / Open / Buffers tabs) ----------------
+
+    fn cwd(&self) -> PathBuf {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    }
+
+    /// Buffer display labels for the Buffers tab.
+    fn buffer_labels(&self) -> Vec<String> {
+        (0..self.buffers.len()).map(|i| crate::ui::modal::buffer_label(self, i)).collect()
+    }
+
+    /// Open the modal on `tab`, resetting that tab's query.
+    pub fn open_modal(&mut self, tab: ModalTab) {
+        self.modal_open = true;
+        self.modal_tab = tab;
+        match tab {
+            ModalTab::Commands => self.palette.open(),
+            ModalTab::Open => self.file_picker.open(self.cwd()),
+            ModalTab::Buffers => {
+                self.buffer_tab.reset();
+                let names = self.buffer_labels();
+                self.buffer_tab.update(&names);
+            }
+        }
+    }
+
+    fn close_modal(&mut self) {
+        self.modal_open = false;
+    }
+
+    /// Switch tabs (keeping each tab's query) and refresh the new tab's data.
+    fn modal_cycle(&mut self, forward: bool) {
+        self.modal_tab = if forward { self.modal_tab.next() } else { self.modal_tab.prev() };
+        match self.modal_tab {
+            ModalTab::Commands => self.palette.update(),
+            ModalTab::Open => self.file_picker.rescan(self.cwd()),
+            ModalTab::Buffers => {
+                let names = self.buffer_labels();
+                self.buffer_tab.update(&names);
+            }
+        }
+    }
+
+    fn handle_modal_key(&mut self, ev: KeyEvent) {
+        use crossterm::event::KeyCode::*;
+        let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
+        let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
+
+        // Ctrl+Tab / Ctrl+Shift+Tab cycle the tabs.
+        if ctrl && matches!(ev.code, Tab) {
+            self.modal_cycle(!shift);
+            return;
+        }
+        if ctrl && matches!(ev.code, BackTab) {
+            self.modal_cycle(false);
+            return;
+        }
+        if matches!(ev.code, Esc) {
+            self.close_modal();
+            return;
+        }
+
+        match self.modal_tab {
+            ModalTab::Commands => self.commands_tab_key(ev),
+            ModalTab::Open => self.open_tab_key(ev),
+            ModalTab::Buffers => self.buffers_tab_key(ev),
+        }
+    }
+
+    fn commands_tab_key(&mut self, ev: KeyEvent) {
         use crossterm::event::KeyCode::*;
         match ev.code {
-            Esc => self.palette.close(),
             Enter => {
-                if let Some(name) = self.palette.selected_command() {
-                    let name = name.to_string();
-                    self.palette.close();
-                    self.status_message.clear();
+                let name = self.palette.selected_command().map(|s| s.to_string());
+                self.close_modal();
+                self.status_message.clear();
+                if let Some(name) = name {
                     self.run_named(&name);
-                } else {
-                    self.palette.close();
                 }
             }
             Up | BackTab => self.palette.move_selection(-1),
@@ -472,14 +540,12 @@ impl App {
         }
     }
 
-    /// Key handling while the fuzzy file picker is open.
-    fn handle_file_picker_key(&mut self, ev: KeyEvent) {
+    fn open_tab_key(&mut self, ev: KeyEvent) {
         use crossterm::event::KeyCode::*;
         match ev.code {
-            Esc => self.file_picker.close(),
             Enter => match self.file_picker.accept() {
                 crate::files::picker::Accept::Open(p) => {
-                    self.file_picker.close();
+                    self.close_modal();
                     self.status_message.clear();
                     self.do_open(p);
                 }
@@ -499,6 +565,45 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn buffers_tab_key(&mut self, ev: KeyEvent) {
+        use crossterm::event::KeyCode::*;
+        match ev.code {
+            Enter => {
+                let idx = self.buffer_tab.selected_index();
+                self.close_modal();
+                if let Some(i) = idx {
+                    self.set_active(i);
+                }
+            }
+            Up | BackTab => self.buffer_tab.move_selection(-1),
+            Down | Tab => self.buffer_tab.move_selection(1),
+            Backspace => {
+                self.buffer_tab.query.pop();
+                let names = self.buffer_labels();
+                self.buffer_tab.update(&names);
+            }
+            Char(c) if !ev.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.buffer_tab.query.push(c);
+                let names = self.buffer_labels();
+                self.buffer_tab.update(&names);
+            }
+            _ => {}
+        }
+    }
+
+    /// Switch to buffer `index` (clamped); used by the Buffers tab and Ctrl+N.
+    fn set_active(&mut self, index: usize) {
+        if index >= self.buffers.len() {
+            return;
+        }
+        self.active = index;
+        self.top_line = 0;
+        self.top_subrow = 0;
+        self.left_col = 0;
+        self.disk_warned = false;
+        self.ensure_cursor_visible();
     }
 
     pub fn selected_setting(&self) -> usize {
@@ -765,8 +870,7 @@ impl App {
             Command::SaveAs(p) => self.do_save_as(p),
             Command::OpenFile(p) => {
                 if p.as_os_str().is_empty() {
-                    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                    self.file_picker.open(cwd);
+                    self.open_modal(ModalTab::Open);
                 } else {
                     self.do_open(p);
                 }
@@ -900,9 +1004,11 @@ impl App {
             Command::NextBuffer => self.switch_buffer(1),
             Command::PrevBuffer => self.switch_buffer(-1),
             Command::CloseBuffer => self.close_buffer(),
+            Command::GotoBuffer(i) => self.set_active(i),
 
-            // Command palette
-            Command::CommandPalette => self.palette.open(),
+            // Modal (Commands / Open / Buffers tabs)
+            Command::CommandPalette => self.open_modal(ModalTab::Commands),
+            Command::OpenBuffers => self.open_modal(ModalTab::Buffers),
 
             Command::Settings => self.settings_panel.open(),
 

@@ -16,10 +16,12 @@ pub struct Row<'a> {
     pub hint: &'a str,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     screen: &mut Screen,
     app: &App,
-    title: &str,
+    tabs: &[&str],
+    active_tab: usize,
     query: &str,
     rows: &[Row],
     selected: usize,
@@ -41,14 +43,27 @@ pub fn render(
     let visible = count.min(MAX_ROWS).max(1);
     let offset = if selected >= MAX_ROWS { selected - MAX_ROWS + 1 } else { 0 };
 
-    // Top border with title.
-    let mut top = format!("┌ {title} ");
-    while top.chars().count() < (width - 1) as usize {
-        top.push('─');
-    }
-    top.push('┐');
+    // Top border with a tab bar; the active tab is highlighted.
     put_row(screen, x0, y0, width, panel_bg);
-    screen.put_str(x0, y0, &top, border, panel_bg, false, false);
+    screen.put_str(x0, y0, "┌─", border, panel_bg, false, false);
+    let mut tx = x0 + 2;
+    for (i, label) in tabs.iter().enumerate() {
+        let active = i == active_tab;
+        let (fg, txt, bold) = if active {
+            (theme.keyword, format!(" {label} "), true)
+        } else {
+            (theme.comment, format!(" {label} "), false)
+        };
+        let bg = if active { theme.selection } else { panel_bg };
+        tx = screen.put_str(tx, y0, &txt, fg, bg, bold, false);
+    }
+    // Fill the rest of the top border.
+    let mut x = tx;
+    while x < x0 + width - 1 {
+        screen.set(x, y0, Cell { ch: '─', fg: border, bg: panel_bg, bold: false, italic: false });
+        x += 1;
+    }
+    screen.set(x0 + width - 1, y0, Cell { ch: '┐', fg: border, bg: panel_bg, bold: false, italic: false });
 
     // Query line.
     let qy = y0 + 1;

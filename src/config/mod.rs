@@ -190,7 +190,17 @@ fn config_base_dir() -> PathBuf {
 fn default_keybindings() -> Keybindings {
     let binds: &[(&str, &str)] = &[
         ("ctrl-p", "command_palette"),
+        ("ctrl-t", "open_buffers"),
         ("ctrl-,", "settings"),
+        ("ctrl-1", "goto_buffer 1"),
+        ("ctrl-2", "goto_buffer 2"),
+        ("ctrl-3", "goto_buffer 3"),
+        ("ctrl-4", "goto_buffer 4"),
+        ("ctrl-5", "goto_buffer 5"),
+        ("ctrl-6", "goto_buffer 6"),
+        ("ctrl-7", "goto_buffer 7"),
+        ("ctrl-8", "goto_buffer 8"),
+        ("ctrl-9", "goto_buffer 9"),
         ("ctrl-s", "save"),
         ("ctrl-q", "quit"),
         ("ctrl-z", "undo"),

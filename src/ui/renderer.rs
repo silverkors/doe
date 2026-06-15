@@ -259,10 +259,8 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     };
 
     // --- overlays (drawn on top of everything) ----------------------------
-    let overlay_cursor = if app.palette.open {
-        super::palette::render(screen, app)
-    } else if app.file_picker.open {
-        super::file_picker::render(screen, app)
+    let overlay_cursor = if app.modal_open {
+        super::modal::render(screen, app)
     } else if app.settings_panel.open {
         super::settings::render(screen, app);
         None
@@ -273,7 +271,7 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     // --- final cursor position --------------------------------------------
     screen.cursor = if app.settings_panel.open {
         None // navigated with arrows; no text caret
-    } else if app.palette.open || app.file_picker.open {
+    } else if app.modal_open {
         overlay_cursor
     } else if app.command.active {
         command_cursor

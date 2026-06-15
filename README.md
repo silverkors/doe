@@ -57,19 +57,22 @@ doe a.md b.rs c.toml   # open several files as buffers
 - **Plugin system** — internal API (events, buffer view, status segments,
   command aliases) designed to back sandboxed WASM plugins later.
 
-## Command palette (Spotlight-style)
+## The modal (Spotlight-style, tabbed)
 
-DOE is **modeless** — you're always editing, no Vim modes. The command entry
-point is a fast, fuzzy command palette:
+DOE is **modeless** — you're always editing, no Vim modes. One fuzzy modal with
+three tabs is the entry point for commands, opening files and switching buffers:
 
-- `Ctrl+P` opens it; type to fuzzy-filter actions, `↑/↓` to move, `Enter` to
-  run, `Esc` to close.
-- With an empty query it surfaces the actions you use most. Usage counts are
-  persisted (`~/.config/doe/usage.toml`), so your common actions stay on top.
-- *(Planned: context-aware ranking — guessing the next action from what you're
-  doing.)*
+- **Commands** (`Ctrl+P`) — fuzzy-filter actions; empty query surfaces the ones
+  you use most (usage persisted to `~/.config/doe/usage.toml`).
+- **Open** (`Ctrl+O`) — the Open picker (below).
+- **Buffers** (`Ctrl+T`) — switch between open files; `Enter` jumps to one.
 
-**`Ctrl+O` opens the Open picker** — one searchable overlay that does everything:
+`Ctrl+Tab` / `Ctrl+Shift+Tab` cycle the tabs (each keeps its own query), `↑/↓`
+move, `Enter` runs/opens, `Esc` closes. `Ctrl+1`…`Ctrl+9` switch directly to a
+buffer without opening the modal. (Ctrl+Tab / Ctrl+digit need a terminal with
+the keyboard-enhancement protocol, which DOE requests on startup.)
+
+**The Open tab** is one searchable picker that does everything:
 
 - **Recent files** first when the query is empty (the 10 most recent, persisted
   to `~/.config/doe/recent.toml`); a "⋯ N more recent files" row expands to the
@@ -88,18 +91,19 @@ point is a fast, fuzzy command palette:
 
 | Key | Action | Key | Action |
 |-----|--------|-----|--------|
-| `Ctrl+P` | command palette | `Ctrl+F` | find |
-| `Ctrl+S` | save | `F3` / `Shift+F3` | find next / prev |
-| `Ctrl+Q` | quit | `Ctrl+H` | replace (`from\|to`) |
-| `Ctrl+Z` / `Ctrl+Y` | undo / redo | `Ctrl+D` | add cursor at next match |
-| `Ctrl+B` / `Ctrl+I` | bold / italic | `Alt+↑` / `Alt+↓` | add cursor above / below |
-| `Ctrl+A` | select all | `Ctrl+L` | select line |
-| `Ctrl+D` | select word / add next occurrence | `Alt+F3` | select all occurrences |
+| `Ctrl+P` | modal: commands | `Ctrl+F` | find |
+| `Ctrl+O` | modal: open file | `F3` / `Shift+F3` | find next / prev |
+| `Ctrl+T` | modal: buffers | `Ctrl+H` | replace (`from\|to`) |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | cycle modal tabs | `Ctrl+D` | select word / add next |
+| `Ctrl+1`…`Ctrl+9` | switch to buffer N | `Alt+F3` | select all occurrences |
+| `Ctrl+S` / `Ctrl+Q` | save / quit | `Alt+↑` / `Alt+↓` | add cursor above / below |
+| `Ctrl+Z` / `Ctrl+Y` | undo / redo | `Ctrl+L` | select line |
+| `Ctrl+B` / `Ctrl+I` | bold / italic | `Ctrl+A` | select all |
 | `Ctrl+/` | toggle comment | `Esc` | clear extra cursors |
-| `Ctrl+O` | fuzzy file picker | `Ctrl+End` / `Ctrl+Home` | end / start of file |
 | `Alt+Z` | toggle soft wrap | `Ctrl+,` | settings panel |
+| `Ctrl+Home` / `Ctrl+End` | start / end of file | | |
 
-Everything else lives in the palette.
+Everything else lives in the command palette.
 
 ## Configuration
 

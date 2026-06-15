@@ -20,7 +20,8 @@ use anyhow::Result;
 use app::App;
 use config::Config;
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::{cursor, execute, terminal};
 use std::io::{self, Write};
@@ -87,11 +88,20 @@ fn setup_terminal() -> Result<()> {
     terminal::enable_raw_mode()?;
     let mut out = io::stdout();
     execute!(out, terminal::EnterAlternateScreen, EnableMouseCapture, cursor::Hide)?;
+    // Ask for the keyboard-enhancement protocol so chords like Ctrl+Tab and
+    // Ctrl+1..9 are reported distinctly (no-op on terminals that don't support
+    // it). Best effort — ignored if unsupported.
+    if matches!(terminal::supports_keyboard_enhancement(), Ok(true)) {
+        let _ = execute!(out, PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES));
+    }
     Ok(())
 }
 
 fn restore_terminal() -> Result<()> {
     let mut out = io::stdout();
+    if matches!(terminal::supports_keyboard_enhancement(), Ok(true)) {
+        let _ = execute!(out, PopKeyboardEnhancementFlags);
+    }
     execute!(out, cursor::Show, DisableMouseCapture, terminal::LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
     Ok(())

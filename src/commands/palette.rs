@@ -101,10 +101,6 @@ impl Palette {
         self.update();
     }
 
-    pub fn close(&mut self) {
-        self.open = false;
-    }
-
     pub fn move_selection(&mut self, delta: isize) {
         if self.results.is_empty() {
             return;

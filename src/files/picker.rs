@@ -78,8 +78,11 @@ impl FilePicker {
         self.update();
     }
 
-    pub fn close(&mut self) {
-        self.open = false;
+    /// Re-scan files keeping the current query (used when re-entering the tab).
+    pub fn rescan(&mut self, root: PathBuf) {
+        self.files = scan(&root);
+        self.root = root;
+        self.update();
     }
 
     pub fn move_selection(&mut self, delta: isize) {

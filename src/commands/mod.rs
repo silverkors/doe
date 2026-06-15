@@ -78,9 +78,11 @@ pub enum Command {
     NextBuffer,
     PrevBuffer,
     CloseBuffer,
+    GotoBuffer(usize),
 
-    // Command palette (Spotlight-style action launcher)
+    // Command palette / modal tabs (Spotlight-style launcher)
     CommandPalette,
+    OpenBuffers,
 
     // View
     ToggleSoftWrap,
