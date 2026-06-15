@@ -536,6 +536,7 @@ impl App {
                 "trim_trailing_whitespace_on_save" => {
                     s.trim_trailing_whitespace_on_save = !s.trim_trailing_whitespace_on_save
                 }
+                "render_callouts" => s.render_callouts = !s.render_callouts,
                 "mouse" => s.mouse = !s.mouse,
                 _ => {}
             },
@@ -576,6 +577,7 @@ impl App {
             "insert_spaces" => on(s.insert_spaces),
             "show_whitespace" => on(s.show_whitespace),
             "trim_trailing_whitespace_on_save" => on(s.trim_trailing_whitespace_on_save),
+            "render_callouts" => on(s.render_callouts),
             "mouse" => on(s.mouse),
             _ => String::new(),
         }

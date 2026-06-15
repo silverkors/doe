@@ -6,7 +6,8 @@ use super::screen::{Cell, Screen};
 use super::{layout::Layout, statusbar, wrap};
 use crate::app::App;
 use crate::plugins::PluginView;
-use crate::syntax::{highlighter_for, LineState, StyleKind};
+use crate::editor::Buffer;
+use crate::syntax::{highlighter_for, Language, LineState, StyleKind};
 use crossterm::style::Color;
 use std::io::Write;
 
@@ -27,6 +28,11 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
 
     // Matching bracket pair for the primary cursor (display-only, bounded scan).
     let bracket_pair = buf.matching_bracket(buf.primary_cursor().head, BRACKET_SCAN_LIMIT);
+
+    // The callout block the cursor is in (rendered raw for editing); other
+    // callouts render in a decorated preview form.
+    let preview_callouts = settings.render_callouts && buf.language == Language::Markdown;
+    let cursor_callout = if preview_callouts { cursor_callout_block(buf, cur_line) } else { None };
 
     let highlighter = highlighter_for(buf.language);
     // Seed fence state from the lines above the viewport so a code block whose
@@ -87,11 +93,22 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     let mut chars: Vec<char> = Vec::new();
     let mut line_start = 0usize;
     let mut line_matches: Vec<(usize, usize)> = Vec::new();
+    let mut loaded_preview: Option<(bool, String)> = None;
 
     for vr in &visrows {
         if loaded != Some(vr.line) {
             line_start = buf.rope.line_to_char(vr.line);
             let line_len = buf.line_len_chars(vr.line);
+            // Decide whether this line renders as a callout preview (fits on one
+            // row and isn't in the cursor's callout block).
+            loaded_preview = if preview_callouts
+                && line_len <= text_width
+                && !in_block(cursor_callout, vr.line)
+            {
+                callout_role(buf, vr.line)
+            } else {
+                None
+            };
             let text: String = buf.rope.slice(line_start..line_start + line_len).to_string();
             chars = text.chars().collect();
             kinds = vec![StyleKind::Default; line_len];
@@ -124,6 +141,12 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
             for x in 0..layout.gutter {
                 screen.set(x, vr.y, Cell { ch: ' ', fg: theme.line_number, bg: theme.background, bold: false, italic: false });
             }
+        }
+
+        // Callout preview: draw a decorated line and skip the raw cells.
+        if let Some((is_header, ty)) = &loaded_preview {
+            draw_callout_preview(screen, &layout, app, buf, vr.line, vr.y, *is_header, ty);
+            continue;
         }
 
         for (k, col) in (vr.start..vr.end).enumerate() {
@@ -313,4 +336,96 @@ fn draw_prompt(screen: &mut Screen, app: &App, layout: &Layout) -> Option<(u16, 
 
 fn is_in_match(idx: usize, matches: &[(usize, usize)]) -> bool {
     matches.iter().any(|(s, e)| idx >= *s && idx < *e)
+}
+
+// --- callout preview ------------------------------------------------------
+
+fn in_block(block: Option<(usize, usize)>, line: usize) -> bool {
+    block.is_some_and(|(s, e)| line >= s && line <= e)
+}
+
+fn line_text(buf: &Buffer, line: usize) -> String {
+    let start = buf.rope.line_to_char(line);
+    let len = buf.line_len_chars(line);
+    buf.rope.slice(start..start + len).to_string()
+}
+
+fn line_is_blockquote(buf: &Buffer, line: usize) -> bool {
+    line_text(buf, line).trim_start().starts_with('>')
+}
+
+/// The callout type of a `> [!type] …` header line, lowercased, if any.
+fn callout_type(buf: &Buffer, line: usize) -> Option<String> {
+    let text = line_text(buf, line);
+    let rest = text.trim_start().strip_prefix('>')?.trim_start();
+    let inner = rest.strip_prefix("[!")?;
+    let close = inner.find(']')?;
+    let ty = &inner[..close];
+    if ty.is_empty() {
+        None
+    } else {
+        Some(ty.to_lowercase())
+    }
+}
+
+/// `(is_header, type)` if `line` is part of a callout block, else `None`.
+fn callout_role(buf: &Buffer, line: usize) -> Option<(bool, String)> {
+    if !line_is_blockquote(buf, line) {
+        return None;
+    }
+    let mut start = line;
+    while start > 0 && line_is_blockquote(buf, start - 1) {
+        start -= 1;
+    }
+    let ty = callout_type(buf, start)?;
+    Some((line == start, ty))
+}
+
+/// The contiguous callout block containing `cur_line`, if the cursor is in one.
+fn cursor_callout_block(buf: &Buffer, cur_line: usize) -> Option<(usize, usize)> {
+    if !line_is_blockquote(buf, cur_line) {
+        return None;
+    }
+    let mut start = cur_line;
+    while start > 0 && line_is_blockquote(buf, start - 1) {
+        start -= 1;
+    }
+    callout_type(buf, start)?;
+    let mut end = cur_line;
+    let last = buf.len_lines();
+    while end + 1 < last && line_is_blockquote(buf, end + 1) {
+        end += 1;
+    }
+    Some((start, end))
+}
+
+/// Draw a callout line in decorated preview form: an accent bar, a type label
+/// (header) or the body text, with the `>`/`[!type]` markup concealed.
+fn draw_callout_preview(
+    screen: &mut Screen,
+    layout: &Layout,
+    app: &App,
+    buf: &Buffer,
+    line: usize,
+    y: u16,
+    is_header: bool,
+    ty: &str,
+) {
+    let theme = &app.config.theme;
+    let bg = theme.background;
+    let x0 = layout.text_x();
+    screen.set(x0, y, Cell { ch: '▌', fg: theme.callout, bg, bold: false, italic: false });
+
+    let text = line_text(buf, line);
+    let after = text.trim_start().strip_prefix('>').unwrap_or("").trim_start();
+    let cx = x0 + 2;
+    if is_header {
+        let label = ty.to_uppercase();
+        let mut x = screen.put_str(cx, y, &label, theme.callout, bg, true, false);
+        x = screen.put_str(x, y, "  ", theme.callout, bg, false, false);
+        let title = after.splitn(2, ']').nth(1).unwrap_or("").trim_start();
+        screen.put_str(x, y, title, theme.foreground, bg, true, false);
+    } else {
+        screen.put_str(cx, y, after, theme.quote, bg, false, false);
+    }
 }

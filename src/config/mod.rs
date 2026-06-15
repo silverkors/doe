@@ -35,6 +35,9 @@ pub struct Settings {
     pub soft_wrap: bool,
     pub show_whitespace: bool,
     pub trim_trailing_whitespace_on_save: bool,
+    /// Render Markdown callouts in a decorated form when the cursor is not on
+    /// them (the cursor's own callout shows raw source for editing).
+    pub render_callouts: bool,
 }
 
 impl Default for Settings {
@@ -50,6 +53,7 @@ impl Default for Settings {
             soft_wrap: true,
             show_whitespace: false,
             trim_trailing_whitespace_on_save: false,
+            render_callouts: true,
         }
     }
 }

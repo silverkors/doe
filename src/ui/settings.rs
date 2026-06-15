@@ -29,6 +29,7 @@ pub fn items() -> Vec<Item> {
         Item { key: "line_numbers", label: "Line numbers", kind: Kind::Bool },
         Item { key: "relative_line_numbers", label: "Relative line numbers", kind: Kind::Bool },
         Item { key: "syntax_highlighting", label: "Syntax highlighting", kind: Kind::Bool },
+        Item { key: "render_callouts", label: "Render Markdown callouts", kind: Kind::Bool },
         Item { key: "tab_width", label: "Tab width", kind: Kind::Int(1, 8) },
         Item { key: "insert_spaces", label: "Insert spaces (instead of tabs)", kind: Kind::Bool },
         Item { key: "show_whitespace", label: "Show whitespace", kind: Kind::Bool },
