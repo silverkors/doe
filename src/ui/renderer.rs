@@ -399,8 +399,41 @@ fn cursor_callout_block(buf: &Buffer, cur_line: usize) -> Option<(usize, usize)>
     Some((start, end))
 }
 
-/// Draw a callout line in decorated preview form: an accent bar, a type label
-/// (header) or the body text, with the `>`/`[!type]` markup concealed.
+/// Per-callout-type accent colour and icon, plus a tinted card background.
+fn callout_style(theme: &crate::config::theme::Theme, ty: &str) -> (Color, char) {
+    match ty {
+        "note" | "info" | "abstract" | "summary" | "tldr" => (theme.heading, '●'),
+        "tip" | "hint" | "important" => (theme.type_, '◆'),
+        "success" | "check" | "done" => (theme.string, '●'),
+        "question" | "help" | "faq" => (theme.type_, '?'),
+        "warning" | "caution" | "attention" => (theme.keyword, '▲'),
+        "danger" | "error" | "bug" | "failure" | "fail" | "missing" => (theme.tag, '■'),
+        "example" => (theme.callout, '»'),
+        "quote" | "cite" => (theme.quote, '"'),
+        "todo" => (theme.keyword, '●'),
+        _ => (theme.callout, '◆'),
+    }
+}
+
+fn lerp(a: u8, b: u8, t: f32) -> u8 {
+    (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
+}
+
+/// Blend `accent` over `bg` by `t` for a subtle card tint.
+fn tint(bg: Color, accent: Color, t: f32) -> Color {
+    match (bg, accent) {
+        (Color::Rgb { r: br, g: bgr, b: bb }, Color::Rgb { r: ar, g: ag, b: ab }) => Color::Rgb {
+            r: lerp(br, ar, t),
+            g: lerp(bgr, ag, t),
+            b: lerp(bb, ab, t),
+        },
+        _ => bg,
+    }
+}
+
+/// Draw a callout line as a decorated "card" row: a tinted background across the
+/// text area, an accent bar, a type icon + label (header) or the body text,
+/// with the `>`/`[!type]` markup concealed.
 fn draw_callout_preview(
     screen: &mut Screen,
     layout: &Layout,
@@ -412,20 +445,28 @@ fn draw_callout_preview(
     ty: &str,
 ) {
     let theme = &app.config.theme;
-    let bg = theme.background;
+    let (accent, icon) = callout_style(theme, ty);
+    let card_bg = tint(theme.background, accent, 0.14);
     let x0 = layout.text_x();
-    screen.set(x0, y, Cell { ch: '▌', fg: theme.callout, bg, bold: false, italic: false });
+
+    // Tinted card background across the whole text area.
+    for x in x0..app.width {
+        screen.set(x, y, Cell { ch: ' ', fg: theme.foreground, bg: card_bg, bold: false, italic: false });
+    }
+    // Accent bar.
+    screen.set(x0, y, Cell { ch: '▌', fg: accent, bg: card_bg, bold: false, italic: false });
 
     let text = line_text(buf, line);
     let after = text.trim_start().strip_prefix('>').unwrap_or("").trim_start();
     let cx = x0 + 2;
     if is_header {
-        let label = ty.to_uppercase();
-        let mut x = screen.put_str(cx, y, &label, theme.callout, bg, true, false);
-        x = screen.put_str(x, y, "  ", theme.callout, bg, false, false);
+        let mut x = screen.put_str(cx, y, &icon.to_string(), accent, card_bg, true, false);
+        x = screen.put_str(x, y, " ", accent, card_bg, false, false);
+        x = screen.put_str(x, y, &ty.to_uppercase(), accent, card_bg, true, false);
+        x = screen.put_str(x, y, "  ", accent, card_bg, false, false);
         let title = after.splitn(2, ']').nth(1).unwrap_or("").trim_start();
-        screen.put_str(x, y, title, theme.foreground, bg, true, false);
+        screen.put_str(x, y, title, theme.foreground, card_bg, true, false);
     } else {
-        screen.put_str(cx, y, after, theme.quote, bg, false, false);
+        screen.put_str(cx, y, after, theme.foreground, card_bg, false, false);
     }
 }
