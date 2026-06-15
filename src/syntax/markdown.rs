@@ -189,6 +189,48 @@ fn inline(chars: &[char], from: usize, to: usize, out: &mut Vec<Span>, base: Sty
     }
 }
 
+/// One visible character of rendered inline Markdown (markup concealed).
+pub struct InlineGlyph {
+    pub ch: char,
+    pub kind: StyleKind,
+    pub bold: bool,
+    pub italic: bool,
+}
+
+/// Render inline Markdown for preview: parse `text`, then emit only the visible
+/// characters with their styles, concealing markup punctuation and HTML tag
+/// structure. E.g. `*Svensk psalm*` → "Svensk psalm" (italic);
+/// `<font ...>_(x)_</font>` → "(x)" (italic).
+pub fn rendered_inline(text: &str) -> Vec<InlineGlyph> {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let mut spans = Vec::new();
+    inline(&chars, 0, n, &mut spans, StyleKind::Default);
+
+    let mut kind = vec![StyleKind::Default; n];
+    let mut bold = vec![false; n];
+    let mut ital = vec![false; n];
+    for s in &spans {
+        for c in s.start..s.end.min(n) {
+            kind[c] = s.kind;
+            bold[c] = s.bold;
+            ital[c] = s.italic;
+        }
+    }
+
+    (0..n)
+        .filter(|&c| !is_concealed(kind[c]))
+        .map(|c| InlineGlyph { ch: chars[c], kind: kind[c], bold: bold[c], italic: ital[c] })
+        .collect()
+}
+
+fn is_concealed(k: StyleKind) -> bool {
+    matches!(
+        k,
+        StyleKind::MarkupPunct | StyleKind::Tag | StyleKind::Attribute | StyleKind::String
+    )
+}
+
 /// If `[!type]` starts at `start`, return the index just past the `]`.
 fn callout_marker_end(chars: &[char], start: usize, n: usize) -> Option<usize> {
     if start + 2 < n && chars[start] == '[' && chars[start + 1] == '!' {

@@ -93,19 +93,15 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     let mut chars: Vec<char> = Vec::new();
     let mut line_start = 0usize;
     let mut line_matches: Vec<(usize, usize)> = Vec::new();
-    let mut loaded_preview: Option<(bool, String)> = None;
+    let mut loaded_preview: Option<PreviewRole> = None;
 
     for vr in &visrows {
         if loaded != Some(vr.line) {
             line_start = buf.rope.line_to_char(vr.line);
             let line_len = buf.line_len_chars(vr.line);
-            // Decide whether this line renders as a callout preview (fits on one
-            // row and isn't in the cursor's callout block).
-            loaded_preview = if preview_callouts
-                && line_len <= text_width
-                && !in_block(cursor_callout, vr.line)
-            {
-                callout_role(buf, vr.line)
+            // Decide whether this line renders as part of a callout preview.
+            loaded_preview = if preview_callouts {
+                preview_role(buf, vr.line, cur_line, cursor_callout, line_len, text_width)
             } else {
                 None
             };
@@ -144,8 +140,8 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
         }
 
         // Callout preview: draw a decorated line and skip the raw cells.
-        if let Some((is_header, ty)) = &loaded_preview {
-            draw_callout_preview(screen, &layout, app, buf, vr.line, vr.y, *is_header, ty);
+        if let Some(role) = &loaded_preview {
+            draw_callout_preview(screen, &layout, app, buf, vr.line, vr.y, role);
             continue;
         }
 
@@ -368,6 +364,10 @@ fn callout_type(buf: &Buffer, line: usize) -> Option<String> {
     }
 }
 
+fn line_is_blank(buf: &Buffer, line: usize) -> bool {
+    line_text(buf, line).trim().is_empty()
+}
+
 /// `(is_header, type)` if `line` is part of a callout block, else `None`.
 fn callout_role(buf: &Buffer, line: usize) -> Option<(bool, String)> {
     if !line_is_blockquote(buf, line) {
@@ -379,6 +379,53 @@ fn callout_role(buf: &Buffer, line: usize) -> Option<(bool, String)> {
     }
     let ty = callout_type(buf, start)?;
     Some((line == start, ty))
+}
+
+/// What a line renders as in callout-preview mode.
+enum PreviewRole {
+    /// Top border of a callout box (a blank line above the callout).
+    Top(String),
+    /// Bottom border (a blank line below the callout).
+    Bottom(String),
+    /// Header line — shows the title.
+    Header(String),
+    /// Body line.
+    Body(String),
+}
+
+/// Decide how `line` renders in preview mode (or `None` for raw).
+fn preview_role(
+    buf: &Buffer,
+    line: usize,
+    cur_line: usize,
+    cursor_callout: Option<(usize, usize)>,
+    line_len: usize,
+    text_width: usize,
+) -> Option<PreviewRole> {
+    // The line under the cursor is always raw; so is the cursor's own callout.
+    if line == cur_line || text_width < 8 {
+        return None;
+    }
+    if let Some((is_header, ty)) = callout_role(buf, line) {
+        if in_block(cursor_callout, line) || line_len > text_width {
+            return None;
+        }
+        return Some(if is_header { PreviewRole::Header(ty) } else { PreviewRole::Body(ty) });
+    }
+    // A blank line adjacent to a callout becomes a box border (keeps geometry).
+    if line_is_blank(buf, line) {
+        if line + 1 < buf.len_lines() && !in_block(cursor_callout, line + 1) {
+            if let Some((true, ty)) = callout_role(buf, line + 1) {
+                return Some(PreviewRole::Top(ty));
+            }
+        }
+        if line > 0 && !in_block(cursor_callout, line - 1) {
+            if let Some((_, ty)) = callout_role(buf, line - 1) {
+                return Some(PreviewRole::Bottom(ty));
+            }
+        }
+    }
+    None
 }
 
 /// The contiguous callout block containing `cur_line`, if the cursor is in one.
@@ -431,42 +478,83 @@ fn tint(bg: Color, accent: Color, t: f32) -> Color {
     }
 }
 
-/// Draw a callout line as a decorated "card" row: a tinted background across the
-/// text area, an accent bar, a type icon + label (header) or the body text,
-/// with the `>`/`[!type]` markup concealed.
-fn draw_callout_preview(
-    screen: &mut Screen,
-    layout: &Layout,
-    app: &App,
-    buf: &Buffer,
-    line: usize,
-    y: u16,
-    is_header: bool,
-    ty: &str,
-) {
+/// Draw a callout preview row: a titled box with an accent colour, type icon
+/// and tinted background. Top/bottom borders reuse the blank lines around the
+/// callout, so the 1 line = 1 row geometry is preserved. Titles and body render
+/// inline Markdown with the markup concealed.
+fn draw_callout_preview(screen: &mut Screen, layout: &Layout, app: &App, buf: &Buffer, line: usize, y: u16, role: &PreviewRole) {
     let theme = &app.config.theme;
+    let ty = match role {
+        PreviewRole::Top(t) | PreviewRole::Bottom(t) | PreviewRole::Header(t) | PreviewRole::Body(t) => t,
+    };
     let (accent, icon) = callout_style(theme, ty);
     let card_bg = tint(theme.background, accent, 0.14);
     let x0 = layout.text_x();
+    let right = app.width.saturating_sub(1); // right border column
+    let w = (app.width - x0) as usize;
 
-    // Tinted card background across the whole text area.
+    // Tinted background across the box.
     for x in x0..app.width {
         screen.set(x, y, Cell { ch: ' ', fg: theme.foreground, bg: card_bg, bold: false, italic: false });
     }
-    // Accent bar.
-    screen.set(x0, y, Cell { ch: '▌', fg: accent, bg: card_bg, bold: false, italic: false });
 
-    let text = line_text(buf, line);
-    let after = text.trim_start().strip_prefix('>').unwrap_or("").trim_start();
-    let cx = x0 + 2;
-    if is_header {
-        let mut x = screen.put_str(cx, y, &icon.to_string(), accent, card_bg, true, false);
-        x = screen.put_str(x, y, " ", accent, card_bg, false, false);
-        x = screen.put_str(x, y, &ty.to_uppercase(), accent, card_bg, true, false);
-        x = screen.put_str(x, y, "  ", accent, card_bg, false, false);
-        let title = after.splitn(2, ']').nth(1).unwrap_or("").trim_start();
-        screen.put_str(x, y, title, theme.foreground, card_bg, true, false);
-    } else {
-        screen.put_str(cx, y, after, theme.foreground, card_bg, false, false);
+    match role {
+        PreviewRole::Top(_) => {
+            let label = format!("╭── {icon} {} ", ty.to_uppercase());
+            let mut s = label;
+            while s.chars().count() + 1 < w {
+                s.push('─');
+            }
+            s.push('╮');
+            screen.put_str(x0, y, &s, accent, card_bg, true, false);
+        }
+        PreviewRole::Bottom(_) => {
+            let mut s = String::from("╰");
+            while s.chars().count() + 1 < w {
+                s.push('─');
+            }
+            s.push('╯');
+            screen.put_str(x0, y, &s, accent, card_bg, false, false);
+        }
+        PreviewRole::Header(_) | PreviewRole::Body(_) => {
+            screen.set(x0, y, Cell { ch: '│', fg: accent, bg: card_bg, bold: false, italic: false });
+            screen.set(right, y, Cell { ch: '│', fg: accent, bg: card_bg, bold: false, italic: false });
+            let text = line_text(buf, line);
+            let after = text.trim_start().strip_prefix('>').unwrap_or("").trim_start();
+            let content = match role {
+                PreviewRole::Header(_) => after.splitn(2, ']').nth(1).unwrap_or("").trim_start(),
+                _ => after,
+            };
+            let bold = matches!(role, PreviewRole::Header(_));
+            let glyphs = crate::syntax::markdown::rendered_inline(content);
+            put_glyphs(screen, x0 + 2, right, y, &glyphs, theme, theme.foreground, bold, card_bg);
+        }
+    }
+}
+
+/// Draw rendered-inline glyphs from `x_start` up to (not including) `x_end`.
+fn put_glyphs(
+    screen: &mut Screen,
+    x_start: u16,
+    x_end: u16,
+    y: u16,
+    glyphs: &[crate::syntax::markdown::InlineGlyph],
+    theme: &crate::config::theme::Theme,
+    base: Color,
+    base_bold: bool,
+    bg: Color,
+) {
+    let mut x = x_start;
+    for g in glyphs {
+        if x >= x_end {
+            break;
+        }
+        let (fg, bold) = if g.kind == StyleKind::Default {
+            (base, base_bold)
+        } else {
+            (theme.color_for(g.kind), g.bold)
+        };
+        screen.set(x, y, Cell { ch: g.ch, fg, bg, bold, italic: g.italic });
+        x += 1;
     }
 }
