@@ -41,7 +41,9 @@ doe a.md b.rs c.toml   # open several files as buffers
 - **Search & replace** — incremental find (`Ctrl+F`), next/prev (`F3`/`Shift+F3`),
   smart-case, `:replace_all from to`.
 - **Mouse** — click to place cursor, drag to select, scroll wheel,
-  `Ctrl/Alt+click` to add a cursor.
+  `Ctrl/Alt+click` to add a cursor. Enable **"Drag to scroll"** in settings to
+  pan the document with a one-finger drag (handy over SSH/tmux on touch clients
+  like Termius — needs `set -g mouse on` in tmux).
 - **Soft wrap** — on by default (great for Markdown/prose); long lines wrap at
   word boundaries and `↑`/`↓` move by visual row. Toggle with `Alt+Z` or set
   `soft_wrap = false`.

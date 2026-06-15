@@ -50,6 +50,8 @@ pub struct App {
     recovery: Recovery,
     next_recovery_id: u64,
     disk_warned: bool,
+    /// Last mouse row during a drag, for touch/drag-to-scroll.
+    last_drag_row: u16,
 }
 
 /// Buffers larger than this are not backed up (autosaving a huge file on every
@@ -154,6 +156,7 @@ impl App {
             recovery,
             next_recovery_id,
             disk_warned: false,
+            last_drag_row: 0,
         };
         let opened: Vec<PathBuf> = app.buffers.iter().filter_map(|b| b.path.clone()).collect();
         for p in &opened {
@@ -652,6 +655,7 @@ impl App {
                     s.trim_trailing_whitespace_on_save = !s.trim_trailing_whitespace_on_save
                 }
                 "render_callouts" => s.render_callouts = !s.render_callouts,
+                "touch_scroll" => s.touch_scroll = !s.touch_scroll,
                 "mouse" => s.mouse = !s.mouse,
                 _ => {}
             },
@@ -693,6 +697,7 @@ impl App {
             "show_whitespace" => on(s.show_whitespace),
             "trim_trailing_whitespace_on_save" => on(s.trim_trailing_whitespace_on_save),
             "render_callouts" => on(s.render_callouts),
+            "touch_scroll" => on(s.touch_scroll),
             "mouse" => on(s.mouse),
             _ => String::new(),
         }
@@ -780,6 +785,7 @@ impl App {
             MouseEventKind::ScrollDown => self.scroll(3),
             MouseEventKind::ScrollUp => self.scroll(-3),
             MouseEventKind::Down(MouseButton::Left) => {
+                self.last_drag_row = ev.row;
                 if let Some(pos) = self.mouse_to_pos(ev.column, ev.row) {
                     let extra = ev.modifiers.contains(KeyModifiers::CONTROL)
                         || ev.modifiers.contains(KeyModifiers::ALT);
@@ -793,7 +799,15 @@ impl App {
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                if let Some(pos) = self.mouse_to_pos(ev.column, ev.row) {
+                if self.config.settings.touch_scroll {
+                    // Pan the document with the finger: dragging down reveals
+                    // content above (scroll up), and vice versa.
+                    let delta = self.last_drag_row as isize - ev.row as isize;
+                    if delta != 0 {
+                        self.scroll(delta);
+                        self.last_drag_row = ev.row;
+                    }
+                } else if let Some(pos) = self.mouse_to_pos(ev.column, ev.row) {
                     self.active_buffer_mut().set_single_cursor(pos, true);
                     self.ensure_cursor_visible();
                 }

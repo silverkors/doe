@@ -38,6 +38,9 @@ pub struct Settings {
     /// Render Markdown callouts in a decorated form when the cursor is not on
     /// them (the cursor's own callout shows raw source for editing).
     pub render_callouts: bool,
+    /// Drag (one-finger touch) scrolls the document instead of selecting text.
+    /// Useful over SSH/tmux on touch clients (e.g. Termius).
+    pub touch_scroll: bool,
 }
 
 impl Default for Settings {
@@ -54,6 +57,7 @@ impl Default for Settings {
             show_whitespace: false,
             trim_trailing_whitespace_on_save: false,
             render_callouts: true,
+            touch_scroll: false,
         }
     }
 }

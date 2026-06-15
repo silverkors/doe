@@ -35,6 +35,7 @@ pub fn items() -> Vec<Item> {
         Item { key: "show_whitespace", label: "Show whitespace", kind: Kind::Bool },
         Item { key: "trim_trailing_whitespace_on_save", label: "Trim trailing whitespace on save", kind: Kind::Bool },
         Item { key: "mouse", label: "Mouse", kind: Kind::Bool },
+        Item { key: "touch_scroll", label: "Drag to scroll (touch/SSH)", kind: Kind::Bool },
     ]
 }
 
