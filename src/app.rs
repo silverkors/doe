@@ -43,7 +43,6 @@ pub struct App {
     pub top_in_code_block: bool,
     recovery: Recovery,
     next_recovery_id: u64,
-    quit_confirm: bool,
     disk_warned: bool,
 }
 
@@ -60,26 +59,42 @@ impl App {
         let mut buffers: Vec<Buffer> = Vec::new();
         let mut recovered = false;
 
-        if !files.is_empty() {
-            // Open the requested files; restore any unsaved changes for them.
-            for f in &files {
-                match Buffer::from_file(f) {
-                    Ok(mut b) => {
-                        b.recovery_id = next_recovery_id;
-                        next_recovery_id += 1;
-                        if let Some(content) = backup_for_path(&recovery, &session, f) {
-                            b.set_text(&content);
-                            recovered = true;
-                        }
-                        buffers.push(b);
+        // Canonical paths opened explicitly via args (so we don't duplicate them
+        // when also restoring the session).
+        let mut arg_paths: Vec<PathBuf> = Vec::new();
+        for f in &files {
+            match Buffer::from_file(f) {
+                Ok(mut b) => {
+                    b.recovery_id = next_recovery_id;
+                    next_recovery_id += 1;
+                    if let Some(content) = backup_for_path(&recovery, &session, f) {
+                        b.set_text(&content);
+                        recovered = true;
                     }
-                    Err(e) => eprintln!("doe: {e:#}"),
+                    arg_paths.push(f.canonicalize().unwrap_or_else(|_| f.clone()));
+                    buffers.push(b);
                 }
+                Err(e) => eprintln!("doe: {e:#}"),
             }
-        } else if let Some(sess) = &session {
-            // No files given and a recovery session exists (unclean exit):
-            // reopen the previous buffers and restore their unsaved content.
+        }
+
+        // Restore the previous session. With no args we resume it fully; with
+        // args we still bring back any buffers that have *unsaved* changes so
+        // quitting without saving never loses work, but skip already-open files.
+        if let Some(sess) = &session {
             for e in &sess.buffers {
+                let entry_canon = e
+                    .path
+                    .as_ref()
+                    .map(|p| Path::new(p).canonicalize().unwrap_or_else(|_| PathBuf::from(p)));
+                if let Some(c) = &entry_canon {
+                    if arg_paths.contains(c) {
+                        continue; // already opened via args
+                    }
+                }
+                if !files.is_empty() && !e.has_backup {
+                    continue; // with args, only rescue unsaved buffers
+                }
                 let mut b = match &e.path {
                     Some(p) => Buffer::from_file(Path::new(p)).unwrap_or_else(|_| Buffer::empty()),
                     None => Buffer::empty(),
@@ -89,13 +104,15 @@ impl App {
                 if e.has_backup {
                     if let Some(content) = recovery.read_backup(e.id) {
                         b.set_text(&content);
-                        b.backup_rev = b.revision; // already on disk
+                        b.backup_rev = b.revision; // already mirrored on disk
                         recovered = true;
                     }
                 }
                 buffers.push(b);
             }
-            active = sess.active.min(buffers.len().saturating_sub(1));
+            if files.is_empty() {
+                active = sess.active.min(buffers.len().saturating_sub(1));
+            }
         }
 
         if buffers.is_empty() {
@@ -126,7 +143,6 @@ impl App {
             top_in_code_block: false,
             recovery,
             next_recovery_id,
-            quit_confirm: false,
             disk_warned: false,
         };
         let opened: Vec<PathBuf> = app.buffers.iter().filter_map(|b| b.path.clone()).collect();
@@ -137,7 +153,7 @@ impl App {
             app.file_picker.record_open(&p);
         }
         if recovered {
-            app.set_status("recovered unsaved changes from a previous session");
+            app.set_status("restored unsaved changes");
         }
         app
     }
@@ -396,7 +412,6 @@ impl App {
             None => {
                 // DOE is modeless: any unbound printable char inserts.
                 if let Some(ch) = keymap::printable_char(&ev) {
-                    self.quit_confirm = false;
                     self.execute(Command::InsertChar(ch));
                 }
             }
@@ -408,9 +423,6 @@ impl App {
     fn run_named(&mut self, name: &str) {
         self.palette.record_use(name);
         if let Some(cmd) = self.resolve_command_name(name) {
-            if !matches!(cmd, Command::Quit) {
-                self.quit_confirm = false;
-            }
             self.execute(cmd);
         }
     }
@@ -670,21 +682,15 @@ impl App {
                     self.do_open(p);
                 }
             }
-            Command::Quit => {
-                if self.any_modified() && !self.quit_confirm {
-                    self.quit_confirm = true;
-                    self.set_status(
-                        "Unsaved changes! Press Ctrl+Q again, or pick \"Quit Without Saving\".",
-                    );
-                } else {
-                    self.shutdown();
-                }
-            }
-            Command::ForceQuit => self.shutdown(),
+            // Quitting never loses work: unsaved changes stay in the recovery
+            // store and come back on the next launch.
+            Command::Quit => self.shutdown(false),
+            // Explicitly discard unsaved changes (clears the recovery store).
+            Command::ForceQuit => self.shutdown(true),
             Command::SaveAndQuit => {
                 if self.active_buffer().path.is_some() {
                     self.do_save();
-                    self.shutdown();
+                    self.shutdown(false);
                 } else {
                     self.open_prompt(PromptKind::SaveAs, "");
                 }
@@ -841,16 +847,19 @@ impl App {
             .unwrap_or(false)
     }
 
-    fn any_modified(&self) -> bool {
-        self.buffers.iter().any(|b| b.modified)
-    }
 
-    /// Persist palette usage + recent files, clear the recovery store (clean
-    /// exit), notify plugins, and request exit.
-    fn shutdown(&mut self) {
+    /// Persist palette usage + recent files, notify plugins, and request exit.
+    /// When `discard` is false (normal quit) the recovery store is flushed and
+    /// kept, so unsaved changes survive and reopen next launch. When true
+    /// (discard/force-quit) the store is cleared, throwing away unsaved work.
+    fn shutdown(&mut self, discard: bool) {
         self.palette.save();
         self.file_picker.save();
-        self.recovery.clear();
+        if discard {
+            self.recovery.clear();
+        } else {
+            self.autosave(); // final flush so the very latest edits are kept
+        }
         self.plugins.dispatch(&Event::Exit);
         self.should_quit = true;
     }

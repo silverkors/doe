@@ -3,9 +3,10 @@
 
 use crate::editor::Buffer;
 
-/// Left segment: file name and modified marker (DOE is modeless — no mode word).
+/// Left segment: file name and an unsaved-changes marker `*` (DOE is modeless —
+/// no mode word).
 pub fn left_text(buffer: &Buffer) -> String {
-    let modified = if buffer.modified { " ●" } else { "" };
+    let modified = if buffer.modified { " *" } else { "" };
     format!(" {}{}", buffer.name(), modified)
 }
 

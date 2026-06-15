@@ -30,10 +30,12 @@ doe a.md b.rs c.toml   # open several files as buffers
 - **Soft wrap** — on by default (great for Markdown/prose); long lines wrap at
   word boundaries and `↑`/`↓` move by visual row. Toggle with `Alt+Z` or set
   `soft_wrap = false`.
-- **Crash recovery** — an invisible autosave continuously mirrors open buffers
-  to a recovery store. If DOE is killed unexpectedly, relaunching restores the
-  open files *and* their unsaved changes (including never-saved buffers, which
-  you can then Save As). A clean exit clears the store.
+- **Never lose work** — an invisible autosave continuously mirrors open buffers
+  to a recovery store, so you can quit without saving (no prompt): relaunching
+  reopens your files *with* their unsaved changes (including never-saved
+  buffers, which you can then Save As). Survives crashes too. The status bar
+  shows `*` while a buffer has unsaved changes; "Discard Changes and Quit"
+  throws them away.
 - **Multiple buffers**, status bar, line numbers (absolute or relative).
 - **Configurable** keybindings, settings and themes — no recompile needed.
 - **Incremental rendering** — a diffing cell grid redraws only changed cells.

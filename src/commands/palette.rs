@@ -49,7 +49,7 @@ pub fn catalog() -> &'static [PaletteAction] {
         PaletteAction { command: "move_buffer_end", title: "Go to End of File", hint: "Ctrl+End" },
         PaletteAction { command: "save_quit", title: "Save and Quit", hint: "" },
         PaletteAction { command: "quit", title: "Quit", hint: "Ctrl+Q" },
-        PaletteAction { command: "force_quit", title: "Quit Without Saving", hint: "" },
+        PaletteAction { command: "force_quit", title: "Discard Changes and Quit", hint: "" },
     ]
 }
 
