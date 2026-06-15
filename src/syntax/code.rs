@@ -18,7 +18,7 @@ impl CodeHighlighter {
 }
 
 impl Highlighter for CodeHighlighter {
-    fn highlight_line(&self, text: &str, _state: &mut LineState) -> Vec<Span> {
+    fn highlight_line(&self, _line: usize, text: &str, _state: &mut LineState) -> Vec<Span> {
         let chars: Vec<char> = text.chars().collect();
         let n = chars.len();
         let mut spans = Vec::new();

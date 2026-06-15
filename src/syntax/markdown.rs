@@ -8,7 +8,7 @@ use super::highlighter::{Highlighter, LineState, Span, StyleKind};
 pub struct MarkdownHighlighter;
 
 impl Highlighter for MarkdownHighlighter {
-    fn highlight_line(&self, text: &str, state: &mut LineState) -> Vec<Span> {
+    fn highlight_line(&self, _line: usize, text: &str, state: &mut LineState) -> Vec<Span> {
         let chars: Vec<char> = text.chars().collect();
         let n = chars.len();
         let trimmed_start = chars.iter().take_while(|c| c.is_whitespace()).count();
@@ -310,7 +310,7 @@ mod tests {
     use crate::syntax::{Highlighter, LineState, StyleKind};
 
     fn hl(text: &str, state: &mut LineState) -> Vec<super::Span> {
-        MarkdownHighlighter.highlight_line(text, state)
+        MarkdownHighlighter.highlight_line(0, text, state)
     }
 
     #[test]

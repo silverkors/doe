@@ -55,7 +55,9 @@ pub struct LineState {
     pub in_callout: bool,
 }
 
-/// Anything that can highlight a line of text.
+/// Anything that can highlight a line of text. `line` is the buffer line index
+/// (0-based); line-based highlighters ignore it, but whole-document backends
+/// (tree-sitter) use it to look up precomputed spans.
 pub trait Highlighter {
-    fn highlight_line(&self, text: &str, state: &mut LineState) -> Vec<Span>;
+    fn highlight_line(&self, line: usize, text: &str, state: &mut LineState) -> Vec<Span>;
 }

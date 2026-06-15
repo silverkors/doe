@@ -34,7 +34,7 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     let preview_callouts = settings.render_callouts && buf.language == Language::Markdown;
     let cursor_callout = if preview_callouts { cursor_callout_block(buf, cur_line) } else { None };
 
-    let highlighter = highlighter_for(buf.language);
+    let highlighter = highlighter_for(buf);
     // Seed fence state from the lines above the viewport so a code block whose
     // opening fence has scrolled off the top still highlights correctly.
     let mut state = LineState { in_code_block: app.top_in_code_block, ..Default::default() };
@@ -134,7 +134,7 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
             bolds = vec![false; line_len];
             itals = vec![false; line_len];
             if settings.syntax_highlighting && line_len <= MAX_HIGHLIGHT_LINE {
-                for sp in highlighter.highlight_line(&text, &mut state) {
+                for sp in highlighter.highlight_line(vr.line, &text, &mut state) {
                     for c in sp.start..sp.end.min(line_len) {
                         kinds[c] = sp.kind;
                         bolds[c] = sp.bold;

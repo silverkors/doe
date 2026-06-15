@@ -5,9 +5,11 @@
 pub mod code;
 pub mod highlighter;
 pub mod markdown;
+pub mod treesitter;
 
 pub use highlighter::{Highlighter, LineState, StyleKind};
 
+use crate::editor::Buffer;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,11 +120,24 @@ impl Language {
     }
 }
 
-/// Build the appropriate highlighter for a language.
-pub fn highlighter_for(lang: Language) -> Box<dyn Highlighter> {
-    match lang {
+/// Above this buffer size we skip the whole-buffer tree-sitter parse and use
+/// the cheap line-based highlighter, preserving the large-file cost guarantee.
+const TREE_SITTER_MAX_BYTES: usize = 1_000_000;
+
+/// Build the appropriate highlighter for a buffer. Markdown keeps its dedicated
+/// highlighter; other languages prefer a tree-sitter grammar when one is
+/// vendored and the buffer is small enough, else fall back to the keyword-driven
+/// [`code::CodeHighlighter`].
+pub fn highlighter_for(buf: &Buffer) -> Box<dyn Highlighter> {
+    match buf.language {
         Language::Markdown => Box::new(markdown::MarkdownHighlighter),
-        Language::PlainText => Box::new(code::CodeHighlighter::new(Language::PlainText)),
-        other => Box::new(code::CodeHighlighter::new(other)),
+        other => {
+            if buf.rope.len_bytes() <= TREE_SITTER_MAX_BYTES {
+                if let Some(h) = treesitter::TreeSitterHighlighter::new(other, &buf.rope) {
+                    return Box::new(h);
+                }
+            }
+            Box::new(code::CodeHighlighter::new(other))
+        }
     }
 }
