@@ -48,10 +48,19 @@ point is a fast, fuzzy command palette:
 - *(Planned: context-aware ranking — guessing the next action from what you're
   doing.)*
 
-**`Ctrl+O` opens a fuzzy file picker** with the same UI: it scans the working
-directory (skipping `.git`, `target`, `node_modules`, `dist`, `build`, hidden
-files) and fuzzy-filters project files — type a few characters of a path,
-`Enter` opens it.
+**`Ctrl+O` opens the Open picker** — one searchable overlay that does everything:
+
+- **Recent files** first when the query is empty (the 10 most recent, persisted
+  to `~/.config/doe/recent.toml`); a "⋯ N more recent files" row expands to the
+  full history.
+- **Fuzzy search** — type plain text to match across recent + project files
+  (the working dir is scanned, skipping `.git`/`target`/`node_modules`/`dist`/
+  `build`/hidden).
+- **Filesystem navigation** — type a path (anything with `/`, or starting `~`
+  `.` `/`) to browse: pick a directory to descend, a file to open.
+- **Arbitrary paths & new files** — the first row in path mode opens exactly
+  what you typed (existing or new, inside or outside the tree); in search mode
+  an unmatched name offers to create it.
 
 ## Key bindings (defaults)
 

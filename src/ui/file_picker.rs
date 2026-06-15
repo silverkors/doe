@@ -1,4 +1,4 @@
-//! Renders the fuzzy file picker using the shared overlay.
+//! Renders the Open picker (recent / search / filesystem) via the shared overlay.
 
 use super::overlay::{self, Row};
 use super::screen::Screen;
@@ -9,19 +9,19 @@ pub fn render(screen: &mut Screen, app: &App) -> Option<(u16, u16)> {
     let rows: Vec<Row> = picker
         .results
         .iter()
-        .map(|m| Row {
-            text: picker.path_str(m),
-            positions: &m.positions,
-            hint: "",
+        .map(|r| Row {
+            text: &r.display,
+            positions: &r.positions,
+            hint: r.hint,
         })
         .collect();
     overlay::render(
         screen,
         app,
-        "Open File",
+        "Open",
         &picker.query,
         &rows,
         picker.selected,
-        "no files found",
+        "type a path, or a name to create",
     )
 }

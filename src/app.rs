@@ -57,6 +57,7 @@ impl App {
             buffers.push(Buffer::empty());
         }
         let palette = Palette::new(&config.config_dir);
+        let file_picker = FilePicker::new(&config.config_dir);
         let mut app = App {
             config,
             buffers,
@@ -66,7 +67,7 @@ impl App {
             top_subrow: 0,
             command: CommandLine::default(),
             palette,
-            file_picker: FilePicker::new(),
+            file_picker,
             search: SearchState::default(),
             status_message: String::new(),
             plugins: PluginRegistry::with_builtins(),
@@ -79,6 +80,10 @@ impl App {
         };
         if let Some(p) = app.active_buffer().path.clone() {
             app.plugins.dispatch(&Event::OpenFile(p));
+        }
+        let opened: Vec<PathBuf> = app.buffers.iter().filter_map(|b| b.path.clone()).collect();
+        for p in opened {
+            app.file_picker.record_open(&p);
         }
         app.set_status_hint();
         app
@@ -368,14 +373,14 @@ impl App {
         use crossterm::event::KeyCode::*;
         match ev.code {
             Esc => self.file_picker.close(),
-            Enter => {
-                let path = self.file_picker.selected_path();
-                self.file_picker.close();
-                if let Some(p) = path {
+            Enter => match self.file_picker.accept() {
+                crate::files::picker::Accept::Open(p) => {
+                    self.file_picker.close();
                     self.status_message.clear();
                     self.do_open(p);
                 }
-            }
+                crate::files::picker::Accept::Stay => {}
+            },
             Up | BackTab => self.file_picker.move_selection(-1),
             Down | Tab => self.file_picker.move_selection(1),
             Backspace => {
@@ -753,9 +758,10 @@ impl App {
         self.buffers.iter().any(|b| b.modified)
     }
 
-    /// Persist palette usage, notify plugins, and request exit.
+    /// Persist palette usage + recent files, notify plugins, and request exit.
     fn shutdown(&mut self) {
         self.palette.save();
+        self.file_picker.save();
         self.plugins.dispatch(&Event::Exit);
         self.should_quit = true;
     }
@@ -798,6 +804,7 @@ impl App {
 
     fn do_open(&mut self, path: PathBuf) {
         self.disk_warned = false;
+        self.file_picker.record_open(&path);
         // If already open, just switch to it.
         if let Some(i) = self.buffers.iter().position(|b| b.path.as_deref() == Some(path.as_path())) {
             self.active = i;
