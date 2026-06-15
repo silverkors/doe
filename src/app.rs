@@ -491,21 +491,30 @@ impl App {
 
     fn handle_modal_key(&mut self, ev: KeyEvent) {
         use crossterm::event::KeyCode::*;
-        let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
-        let shift = ev.modifiers.contains(KeyModifiers::SHIFT);
-
-        // Ctrl+Tab / Ctrl+Shift+Tab cycle the tabs.
-        if ctrl && matches!(ev.code, Tab) {
-            self.modal_cycle(!shift);
-            return;
-        }
-        if ctrl && matches!(ev.code, BackTab) {
-            self.modal_cycle(false);
-            return;
-        }
-        if matches!(ev.code, Esc) {
-            self.close_modal();
-            return;
+        // Tab / Shift+Tab (and Ctrl+Tab) cycle the tabs everywhere. Left/Right
+        // also cycle, except in the Open tab where they navigate the file tree.
+        match ev.code {
+            Esc => {
+                self.close_modal();
+                return;
+            }
+            Tab => {
+                self.modal_cycle(true);
+                return;
+            }
+            BackTab => {
+                self.modal_cycle(false);
+                return;
+            }
+            Left if self.modal_tab != ModalTab::Open => {
+                self.modal_cycle(false);
+                return;
+            }
+            Right if self.modal_tab != ModalTab::Open => {
+                self.modal_cycle(true);
+                return;
+            }
+            _ => {}
         }
 
         match self.modal_tab {
@@ -526,8 +535,8 @@ impl App {
                     self.run_named(&name);
                 }
             }
-            Up | BackTab => self.palette.move_selection(-1),
-            Down | Tab => self.palette.move_selection(1),
+            Up => self.palette.move_selection(-1),
+            Down => self.palette.move_selection(1),
             Backspace => {
                 self.palette.query.pop();
                 self.palette.update();
@@ -551,10 +560,11 @@ impl App {
                 }
                 crate::files::picker::Accept::Stay => {}
             },
-            Up | BackTab => self.file_picker.move_selection(-1),
+            Up => self.file_picker.move_selection(-1),
             Down => self.file_picker.move_selection(1),
-            Tab => self.file_picker.tab(),
+            // Left/Right navigate the file tree (out of / into directories).
             Left => self.file_picker.go_up(),
+            Right => self.file_picker.tab(),
             Backspace => {
                 self.file_picker.query.pop();
                 self.file_picker.update();
@@ -577,8 +587,8 @@ impl App {
                     self.set_active(i);
                 }
             }
-            Up | BackTab => self.buffer_tab.move_selection(-1),
-            Down | Tab => self.buffer_tab.move_selection(1),
+            Up => self.buffer_tab.move_selection(-1),
+            Down => self.buffer_tab.move_selection(1),
             Backspace => {
                 self.buffer_tab.query.pop();
                 let names = self.buffer_labels();

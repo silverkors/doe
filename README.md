@@ -67,10 +67,13 @@ three tabs is the entry point for commands, opening files and switching buffers:
 - **Open** (`Ctrl+O`) — the Open picker (below).
 - **Buffers** (`Ctrl+T`) — switch between open files; `Enter` jumps to one.
 
-`Ctrl+Tab` / `Ctrl+Shift+Tab` cycle the tabs (each keeps its own query), `↑/↓`
-move, `Enter` runs/opens, `Esc` closes. `Ctrl+1`…`Ctrl+9` switch directly to a
-buffer without opening the modal. (Ctrl+Tab / Ctrl+digit need a terminal with
-the keyboard-enhancement protocol, which DOE requests on startup.)
+**`Tab` / `Shift+Tab`** cycle the tabs (each keeps its own query); `←`/`→` also
+cycle in the Commands and Buffers tabs (in the Open tab they navigate the file
+tree). `Ctrl+Tab` works too. `↑/↓` move, `Enter` runs/opens, `Esc` closes.
+`Ctrl+1`…`Ctrl+9` switch directly to a buffer without opening the modal.
+(`Ctrl+Tab` and `Ctrl+digit` need a terminal with the keyboard-enhancement
+protocol, which DOE requests on startup; `Tab`/`Shift+Tab` and the arrows work
+everywhere.)
 
 **The Open tab** is one searchable picker that does everything:
 
@@ -94,7 +97,7 @@ the keyboard-enhancement protocol, which DOE requests on startup.)
 | `Ctrl+P` | modal: commands | `Ctrl+F` | find |
 | `Ctrl+O` | modal: open file | `F3` / `Shift+F3` | find next / prev |
 | `Ctrl+T` | modal: buffers | `Ctrl+H` | replace (`from\|to`) |
-| `Ctrl+Tab` / `Ctrl+Shift+Tab` | cycle modal tabs | `Ctrl+D` | select word / add next |
+| `Tab` / `Shift+Tab` | cycle modal tabs | `Ctrl+D` | select word / add next |
 | `Ctrl+1`…`Ctrl+9` | switch to buffer N | `Alt+F3` | select all occurrences |
 | `Ctrl+S` / `Ctrl+Q` | save / quit | `Alt+↑` / `Alt+↓` | add cursor above / below |
 | `Ctrl+Z` / `Ctrl+Y` | undo / redo | `Ctrl+L` | select line |
