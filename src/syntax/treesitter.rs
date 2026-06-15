@@ -29,7 +29,7 @@ impl TreeSitterHighlighter {
         parser.set_language(&language).ok()?;
         let source = rope.to_string();
         let tree = parser.parse(source.as_bytes(), None)?;
-        let query = Query::new(&language, query_src).ok()?;
+        let query = Query::new(&language, &query_src).ok()?;
         let names = query.capture_names();
 
         let mut line_spans: Vec<Vec<Span>> = vec![Vec::new(); rope.len_lines()];
@@ -56,13 +56,45 @@ impl Highlighter for TreeSitterHighlighter {
 }
 
 /// Map a grammar's `LANGUAGE` + highlights query, or `None` if unsupported.
-fn grammar(lang: Language) -> Option<(TsLanguage, &'static str)> {
-    match lang {
-        Language::Rust => {
-            Some((tree_sitter_rust::LANGUAGE.into(), tree_sitter_rust::HIGHLIGHTS_QUERY))
+/// The query is owned because some languages (TypeScript) concatenate the
+/// queries of a base grammar (JavaScript) with their own.
+fn grammar(lang: Language) -> Option<(TsLanguage, String)> {
+    let (language, query): (TsLanguage, String) = match lang {
+        Language::Rust => (
+            tree_sitter_rust::LANGUAGE.into(),
+            tree_sitter_rust::HIGHLIGHTS_QUERY.to_string(),
+        ),
+        Language::Python => (
+            tree_sitter_python::LANGUAGE.into(),
+            tree_sitter_python::HIGHLIGHTS_QUERY.to_string(),
+        ),
+        Language::JavaScript => (
+            tree_sitter_javascript::LANGUAGE.into(),
+            tree_sitter_javascript::HIGHLIGHT_QUERY.to_string(),
+        ),
+        Language::TypeScript => {
+            // The TS highlights query inherits JavaScript's; the TS grammar is a
+            // superset, so the JS query parses against it.
+            let mut q = tree_sitter_javascript::HIGHLIGHT_QUERY.to_string();
+            q.push('\n');
+            q.push_str(tree_sitter_typescript::HIGHLIGHTS_QUERY);
+            (tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(), q)
         }
-        _ => None,
-    }
+        Language::Json => (
+            tree_sitter_json::LANGUAGE.into(),
+            tree_sitter_json::HIGHLIGHTS_QUERY.to_string(),
+        ),
+        Language::Css => (
+            tree_sitter_css::LANGUAGE.into(),
+            tree_sitter_css::HIGHLIGHTS_QUERY.to_string(),
+        ),
+        Language::Html => (
+            tree_sitter_html::LANGUAGE.into(),
+            tree_sitter_html::HIGHLIGHTS_QUERY.to_string(),
+        ),
+        _ => return None,
+    };
+    Some((language, query))
 }
 
 /// Translate a tree-sitter capture name (refined by the node kind) into one of
@@ -85,7 +117,9 @@ fn map_capture(name: &str, node_kind: &str) -> Option<StyleKind> {
         "function" => StyleKind::Function,
         "constructor" | "type" | "constant" => StyleKind::Type,
         "string" | "escape" | "char" => StyleKind::String,
+        "number" => StyleKind::Number,
         "comment" => StyleKind::Comment,
+        "tag" => StyleKind::Tag,
         "attribute" => StyleKind::Attribute,
         _ => return None,
     };
@@ -164,5 +198,40 @@ mod tests {
         let src = "/* a\nb */\n";
         assert!(has_kind(&kinds_for_line(src, 0), 0, StyleKind::Comment));
         assert!(has_kind(&kinds_for_line(src, 1), 0, StyleKind::Comment));
+    }
+
+    /// Every vendored grammar must build a highlighter and parse its query
+    /// (a malformed query would silently return `None` and fall back).
+    #[test]
+    fn all_vendored_grammars_construct() {
+        let samples = [
+            (Language::Rust, "fn f() {}\n"),
+            (Language::Python, "def f():\n    return 1\n"),
+            (Language::JavaScript, "function f() { return 1; }\n"),
+            (Language::TypeScript, "function f(x: number): number { return x; }\n"),
+            (Language::Json, "{\"a\": 1, \"b\": true}\n"),
+            (Language::Css, "a { color: red; }\n"),
+            (Language::Html, "<div class=\"x\">hi</div>\n"),
+        ];
+        for (lang, src) in samples {
+            let rope = Rope::from_str(src);
+            assert!(
+                TreeSitterHighlighter::new(lang, &rope).is_some(),
+                "grammar for {lang:?} failed to construct/parse its query"
+            );
+        }
+    }
+
+    #[test]
+    fn python_number_and_keyword() {
+        let rope = Rope::from_str("x = 42\n");
+        let h = TreeSitterHighlighter::new(Language::Python, &rope).unwrap();
+        let mut st = LineState::default();
+        let spans: Vec<_> = h
+            .highlight_line(0, "", &mut st)
+            .into_iter()
+            .map(|s| (s.start, s.end, s.kind))
+            .collect();
+        assert!(has_kind(&spans, 4, StyleKind::Number), "`42`: {spans:?}");
     }
 }

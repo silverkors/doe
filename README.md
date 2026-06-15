@@ -31,8 +31,10 @@ doe a.md b.rs c.toml   # open several files as buffers
 - **Settings panel** — `Ctrl+,` (or the palette) opens a modal to change
   preferences (theme, wrap, tab width, …) by navigating and toggling; changes
   apply live and save to `config.toml`. No need to hand-edit anything.
-- **Code highlighting** — Rust, Python, JS/TS, HTML/XML, CSS, JSON, TOML, YAML,
-  Swift (keyword/string/comment/number, keyword-driven for now).
+- **Code highlighting** — **tree-sitter** grammars for Rust, Python, JS/TS,
+  HTML/XML, CSS and JSON (real parse trees, not regex); TOML, YAML and Swift
+  use the keyword-driven fallback. Large files (>1 MB) skip the parse and use
+  the fallback to stay cheap.
 - **Multi-cursor** — add cursor on next match (`Ctrl+D`), above/below
   (`Alt+↑/↓`), select all matches (`Ctrl+L`), edit at every cursor at once.
 - **Editing** — undo/redo, auto-indent, toggle line comment (`Ctrl+/`),
@@ -166,8 +168,9 @@ Written without `unsafe` Rust.
 - **0.2 (released):** modeless editing + command palette ✓, bracket matching ✓,
   soft wrap ✓, fuzzy file picker (with fs navigation) ✓, crash
   recovery/autosave ✓, unified tabbed modal ✓, Markdown callout live preview ✓.
-- **0.3:** tree-sitter highlighting, WASM sandboxed plugins, project view,
-  Git status, context-aware palette ranking, and **dynamic documents** —
+- **0.3 (in progress):** tree-sitter highlighting (Rust/Python/JS/TS/HTML/CSS/
+  JSON ✓), WASM sandboxed plugins, project view, Git status, context-aware
+  palette ranking, and **dynamic documents** —
   runnable embedded code (Lua/Python/WASM) via sandboxed plugins
   ([design sketch](docs/dynamic-documents.md)).
 
