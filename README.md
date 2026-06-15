@@ -163,8 +163,9 @@ Written without `unsafe` Rust.
 
 ## Roadmap
 
-- **0.2:** modeless editing + command palette ✓, bracket matching ✓, soft
-  wrap ✓, fuzzy file picker (with fs navigation) ✓, crash recovery/autosave ✓.
+- **0.2 (released):** modeless editing + command palette ✓, bracket matching ✓,
+  soft wrap ✓, fuzzy file picker (with fs navigation) ✓, crash
+  recovery/autosave ✓, unified tabbed modal ✓, Markdown callout live preview ✓.
 - **0.3:** tree-sitter highlighting, WASM sandboxed plugins, project view,
   Git status, context-aware palette ranking, and **dynamic documents** —
   runnable embedded code (Lua/Python/WASM) via sandboxed plugins
