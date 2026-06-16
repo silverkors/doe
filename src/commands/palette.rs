@@ -69,11 +69,38 @@ pub struct Result {
     pub positions: Vec<usize>,
 }
 
+/// A snapshot of the editing context used to nudge palette ranking so the
+/// actions most relevant to what you're doing surface higher (especially with
+/// an empty query). Purely additive: fuzzy match quality always dominates.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PaletteContext {
+    pub markdown: bool,
+    /// The language has a line-comment (i.e. it's a programming language).
+    pub code: bool,
+    pub has_selection: bool,
+    pub multiple_cursors: bool,
+    pub modified: bool,
+}
+
+/// Context relevance bonus for an action. Higher = more relevant right now.
+fn context_boost(command: &str, ctx: &PaletteContext) -> i32 {
+    match command {
+        "toggle_bold" | "toggle_italic" if ctx.markdown => 30,
+        "callout_settings" | "import_callouts" if ctx.markdown => 20,
+        "toggle_comment" if ctx.code => 30,
+        "save" | "save_as" if ctx.modified => 25,
+        "clear_extra_cursors" if ctx.multiple_cursors => 30,
+        "add_cursor_next_match" | "select_all_matches" if ctx.has_selection => 15,
+        _ => 0,
+    }
+}
+
 pub struct Palette {
     pub open: bool,
     pub query: String,
     pub selected: usize,
     pub results: Vec<Result>,
+    context: PaletteContext,
     usage: HashMap<String, u32>,
     usage_path: PathBuf,
     dirty: bool,
@@ -88,6 +115,7 @@ impl Palette {
             query: String::new(),
             selected: 0,
             results: Vec::new(),
+            context: PaletteContext::default(),
             usage,
             usage_path,
             dirty: false,
@@ -101,6 +129,12 @@ impl Palette {
         self.query.clear();
         self.selected = 0;
         self.update();
+    }
+
+    /// Refresh the editing-context snapshot used for ranking. Call before
+    /// `open`/`update` when the buffer state may have changed.
+    pub fn set_context(&mut self, ctx: PaletteContext) {
+        self.context = ctx;
     }
 
     pub fn move_selection(&mut self, delta: isize) {
@@ -128,19 +162,21 @@ impl Palette {
     /// Recompute the ranked result list for the current query.
     pub fn update(&mut self) {
         let cat = catalog();
-        let mut scored: Vec<(i32, u32, usize, Vec<usize>)> = Vec::new();
+        let mut scored: Vec<(i32, i32, u32, usize, Vec<usize>)> = Vec::new();
         for (idx, action) in cat.iter().enumerate() {
             let usage = self.usage.get(action.command).copied().unwrap_or(0);
-            match fuzzy(&self.query, action.title) {
-                Some((score, positions)) => scored.push((score, usage, idx, positions)),
-                None => {}
+            let boost = context_boost(action.command, &self.context);
+            if let Some((score, positions)) = fuzzy(&self.query, action.title) {
+                scored.push((score, boost, usage, idx, positions));
             }
         }
-        // Sort by match score desc, then usage desc, then catalog order.
+        // Sort by match score, then context relevance, then usage, then catalog
+        // order. With an empty query all scores tie at 0, so context + usage
+        // decide which actions surface first.
         scored.sort_by(|a, b| {
-            b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2))
+            b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(b.2.cmp(&a.2)).then(a.3.cmp(&b.3))
         });
-        self.results = scored.into_iter().map(|(_, _, idx, positions)| Result { idx, positions }).collect();
+        self.results = scored.into_iter().map(|(_, _, _, idx, positions)| Result { idx, positions }).collect();
         if self.selected >= self.results.len() {
             self.selected = self.results.len().saturating_sub(1);
         }
@@ -239,5 +275,35 @@ mod tests {
         for a in catalog() {
             assert!(super::super::registry::parse(a.command).is_some(), "{}", a.command);
         }
+    }
+
+    fn rank_of(p: &Palette, cmd: &str) -> Option<usize> {
+        p.results.iter().position(|r| catalog()[r.idx].command == cmd)
+    }
+
+    #[test]
+    fn context_boosts_relevant_actions() {
+        let mut p = Palette::new(&std::env::temp_dir());
+        // Empty query in a markdown buffer: Bold should outrank an unrelated
+        // action like Quit purely from context.
+        p.set_context(PaletteContext { markdown: true, ..Default::default() });
+        p.update();
+        assert!(rank_of(&p, "toggle_bold") < rank_of(&p, "quit"));
+
+        // In a code buffer, Toggle Comment is the boosted one instead.
+        p.set_context(PaletteContext { code: true, ..Default::default() });
+        p.update();
+        assert!(rank_of(&p, "toggle_comment") < rank_of(&p, "quit"));
+    }
+
+    #[test]
+    fn fuzzy_match_dominates_context() {
+        let mut p = Palette::new(&std::env::temp_dir());
+        p.set_context(PaletteContext { markdown: true, ..Default::default() });
+        p.query = "quit".to_string();
+        p.update();
+        // A specific query still finds its target regardless of context boosts.
+        assert!(rank_of(&p, "quit").is_some());
+        assert!(rank_of(&p, "toggle_bold").is_none());
     }
 }

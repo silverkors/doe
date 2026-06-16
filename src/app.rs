@@ -472,7 +472,11 @@ impl App {
         self.modal_open = true;
         self.modal_tab = tab;
         match tab {
-            ModalTab::Commands => self.palette.open(),
+            ModalTab::Commands => {
+                let ctx = self.palette_context();
+                self.palette.set_context(ctx);
+                self.palette.open();
+            }
             ModalTab::Open => self.file_picker.open(self.cwd()),
             ModalTab::Buffers => {
                 self.buffer_tab.reset();
@@ -486,11 +490,27 @@ impl App {
         self.modal_open = false;
     }
 
+    /// Snapshot the editing context the command palette uses to rank actions.
+    fn palette_context(&self) -> crate::commands::palette::PaletteContext {
+        let b = self.active_buffer();
+        crate::commands::palette::PaletteContext {
+            markdown: b.language == crate::syntax::Language::Markdown,
+            code: b.language.line_comment().is_some(),
+            has_selection: b.cursors.iter().any(|c| c.has_selection()),
+            multiple_cursors: b.cursors.len() > 1,
+            modified: b.modified,
+        }
+    }
+
     /// Switch tabs (keeping each tab's query) and refresh the new tab's data.
     fn modal_cycle(&mut self, forward: bool) {
         self.modal_tab = if forward { self.modal_tab.next() } else { self.modal_tab.prev() };
         match self.modal_tab {
-            ModalTab::Commands => self.palette.update(),
+            ModalTab::Commands => {
+                let ctx = self.palette_context();
+                self.palette.set_context(ctx);
+                self.palette.update();
+            }
             ModalTab::Open => self.file_picker.rescan(self.cwd()),
             ModalTab::Buffers => {
                 let names = self.buffer_labels();

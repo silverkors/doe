@@ -174,8 +174,8 @@ Written without `unsafe` Rust.
   soft wrap ✓, fuzzy file picker (with fs navigation) ✓, crash
   recovery/autosave ✓, unified tabbed modal ✓, Markdown callout live preview ✓.
 - **0.3 (in progress):** tree-sitter highlighting (Rust/Python/JS/TS/HTML/CSS/
-  JSON ✓), WASM sandboxed plugins, project view, Git status, context-aware
-  palette ranking, and **dynamic documents** —
+  JSON ✓), configurable callouts + Obsidian import ✓, context-aware palette
+  ranking, WASM sandboxed plugins, and **dynamic documents** —
   runnable embedded code (Lua/Python/WASM) via sandboxed plugins
   ([design sketch](docs/dynamic-documents.md)).
 
