@@ -705,6 +705,11 @@ impl App {
 
     fn handle_command_key(&mut self, ev: KeyEvent) {
         use crossterm::event::KeyCode::*;
+        // Confirm prompts (e.g. close with unsaved changes) capture single keys.
+        if self.command.kind.as_ref().is_some_and(|k| k.is_confirm()) {
+            self.handle_confirm_key(ev);
+            return;
+        }
         match ev.code {
             Esc => {
                 self.command.close();
@@ -773,7 +778,8 @@ impl App {
             Some(PromptKind::SaveAs) => {
                 self.execute(Command::SaveAs(files::expand_path(&input)));
             }
-            None => {}
+            // Confirm prompts are handled by handle_confirm_key, not here.
+            Some(PromptKind::ConfirmClose) | None => {}
         }
     }
 
@@ -1159,11 +1165,43 @@ impl App {
         self.ensure_cursor_visible();
     }
 
+    /// Handle a key while a confirm prompt (currently only ConfirmClose) is up.
+    fn handle_confirm_key(&mut self, ev: KeyEvent) {
+        use crossterm::event::KeyCode::*;
+        let confirm = self.command.kind.clone();
+        match (confirm, ev.code) {
+            (Some(PromptKind::ConfirmClose), Char('s' | 'S')) => {
+                self.command.close();
+                self.do_save();
+                // Close only if the save actually landed (an untitled buffer
+                // opens a Save As prompt instead, leaving it modified).
+                if !self.active_buffer().modified {
+                    self.do_close_buffer();
+                }
+            }
+            (Some(PromptKind::ConfirmClose), Char('d' | 'D')) => {
+                self.command.close();
+                self.do_close_buffer();
+            }
+            (Some(PromptKind::ConfirmClose), Char('c' | 'C') | Esc) => {
+                self.command.close();
+                self.set_status("close cancelled");
+            }
+            _ => {}
+        }
+    }
+
     fn close_buffer(&mut self) {
         if self.active_buffer().modified {
-            self.set_status("buffer modified; save or use :q! semantics first");
+            // Ask whether to save, discard, or cancel rather than refusing.
+            self.open_prompt(PromptKind::ConfirmClose, "");
             return;
         }
+        self.do_close_buffer();
+    }
+
+    /// Actually remove the active buffer (caller has resolved any unsaved state).
+    fn do_close_buffer(&mut self) {
         if self.buffers.len() == 1 {
             let mut b = Buffer::empty();
             b.recovery_id = self.fresh_recovery_id();

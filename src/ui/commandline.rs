@@ -12,6 +12,9 @@ pub enum PromptKind {
     Replace,
     /// Save under a new path.
     SaveAs,
+    /// Closing a modified buffer: Save / Discard / Cancel. Not a text prompt —
+    /// the command-line key handler intercepts s/d/c instead of inserting.
+    ConfirmClose,
 }
 
 impl PromptKind {
@@ -20,7 +23,13 @@ impl PromptKind {
             PromptKind::Find => "find: ",
             PromptKind::Replace => "replace (from|to): ",
             PromptKind::SaveAs => "save as: ",
+            PromptKind::ConfirmClose => "unsaved changes — [s]ave  [d]iscard  [c]ancel",
         }
+    }
+
+    /// A confirm prompt captures single keys instead of collecting text.
+    pub fn is_confirm(&self) -> bool {
+        matches!(self, PromptKind::ConfirmClose)
     }
 }
 
