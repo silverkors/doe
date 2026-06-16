@@ -27,7 +27,9 @@ doe a.md b.rs c.toml   # open several files as buffers
   Also **callouts** (`> [!note] Title` — accent bar, dimmed `[!type]`, styled
   title and body) and inline **HTML/XML tags** (`<font color="…">`). Callouts
   get a **live preview**: decorated when the cursor is elsewhere, raw source
-  when you're editing them.
+  when you're editing them. Per-type **accent colour and glyph are
+  configurable** in a panel (palette: "Callout Styles…") and can be
+  **imported from Obsidian's Callout Manager** ("Import Callouts from Obsidian…").
 - **Settings panel** — `Ctrl+,` (or the palette) opens a modal to change
   preferences (theme, wrap, tab width, …) by navigating and toggling; changes
   apply live and save to `config.toml`. No need to hand-edit anything.
@@ -54,7 +56,8 @@ doe a.md b.rs c.toml   # open several files as buffers
   reopens your files *with* their unsaved changes (including never-saved
   buffers, which you can then Save As). Survives crashes too. The status bar
   shows `*` while a buffer has unsaved changes; "Discard Changes and Quit"
-  throws them away.
+  throws them away. Closing a single modified buffer (`Ctrl+W`) prompts to
+  **Save / Discard / Cancel**.
 - **Multiple buffers**, status bar, line numbers (absolute or relative).
 - **Configurable** keybindings, settings and themes — no recompile needed.
 - **Incremental rendering** — a diffing cell grid redraws only changed cells.
@@ -104,6 +107,7 @@ everywhere.)
 | `Tab` / `Shift+Tab` | cycle modal tabs | `Ctrl+D` | select word / add next |
 | `Ctrl+1`…`Ctrl+9` | switch to buffer N | `Alt+F3` | select all occurrences |
 | `Ctrl+S` / `Ctrl+Q` | save / quit | `Alt+↑` / `Alt+↓` | add cursor above / below |
+| `Ctrl+W` | close buffer (prompts if unsaved) | | |
 | `Ctrl+Z` / `Ctrl+Y` | undo / redo | `Ctrl+L` | select line |
 | `Ctrl+B` / `Ctrl+I` | bold / italic | `Ctrl+A` | select all |
 | `Ctrl+/` | toggle comment | `Esc` | clear extra cursors |
@@ -115,7 +119,8 @@ Everything else lives in the command palette.
 ## Configuration
 
 `~/.config/doe/config.toml` (created on first run), themes in
-`~/.config/doe/themes/<name>.toml` (set `DOE_CONFIG_DIR` to use another
+`~/.config/doe/themes/<name>.toml`, and callout styles in
+`~/.config/doe/callouts.toml` (set `DOE_CONFIG_DIR` to use another
 location). DOE is modeless, so there is a single
 `[keybindings.global]` context; bindings are merged over the built-in
 defaults, so you only specify overrides:
