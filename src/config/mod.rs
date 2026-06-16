@@ -5,6 +5,7 @@
 //! and theme are written for the user to edit.
 
 pub mod callouts;
+pub mod obsidian;
 pub mod theme;
 
 use callouts::Callouts;

@@ -86,6 +86,7 @@ pub fn parse(input: &str) -> Option<Command> {
         "toggle_soft_wrap" => Command::ToggleSoftWrap,
         "settings" | "preferences" => Command::Settings,
         "callout_settings" | "callouts" => Command::CalloutSettings,
+        "import_callouts" | "import_obsidian_callouts" => Command::ImportObsidianCallouts,
 
         _ => return None,
     };

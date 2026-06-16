@@ -94,6 +94,7 @@ dependencies = [
  "dirs",
  "ropey",
  "serde",
+ "serde_json",
  "streaming-iterator",
  "toml",
  "tree-sitter",

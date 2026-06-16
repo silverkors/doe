@@ -667,10 +667,43 @@ impl App {
         }
     }
 
-    /// Import callout colours/icons from Obsidian's Callout Manager. Implemented
-    /// in the import commit; stubbed here so the panel's `i` key is wired.
+    /// Begin importing callouts from Obsidian: close the panel and open a path
+    /// prompt, prefilled with an auto-detected vault if one is found.
     fn import_obsidian_callouts(&mut self) {
-        self.set_status("Obsidian import: not available yet");
+        self.callout_panel.close();
+        let prefill = crate::config::obsidian::autodetect()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        self.open_prompt(PromptKind::ImportCallouts, &prefill);
+    }
+
+    /// Read a Callout Manager `data.json` from `input`, apply its colours/icons,
+    /// persist callouts.toml, and reopen the panel to show the result.
+    fn do_import_callouts(&mut self, input: &str) {
+        let path = files::expand_path(input);
+        let Some(data) = crate::config::obsidian::resolve_data_path(&path) else {
+            self.set_status("import: no callout-manager data.json found at that path");
+            return;
+        };
+        let text = match std::fs::read_to_string(&data) {
+            Ok(t) => t,
+            Err(e) => {
+                self.set_status(format!("import: {e}"));
+                return;
+            }
+        };
+        let imports = crate::config::obsidian::parse(&text);
+        if imports.is_empty() {
+            self.set_status("import: no callouts found in that file");
+            return;
+        }
+        let n = imports.len();
+        for imp in imports {
+            self.config.callouts.apply_override(&imp.name, imp.color, imp.icon);
+        }
+        self.config.save_callouts();
+        self.set_status(format!("imported {n} callouts from Obsidian"));
+        self.callout_panel.open();
     }
 
     /// Apply `f` to the currently selected callout entry.
@@ -819,6 +852,11 @@ impl App {
             }
             Some(PromptKind::SaveAs) => {
                 self.execute(Command::SaveAs(files::expand_path(&input)));
+            }
+            Some(PromptKind::ImportCallouts) => {
+                if !input.is_empty() {
+                    self.do_import_callouts(&input);
+                }
             }
             // Confirm prompts are handled by handle_confirm_key, not here.
             Some(PromptKind::ConfirmClose) | None => {}
@@ -1084,6 +1122,7 @@ impl App {
 
             Command::Settings => self.settings_panel.open(),
             Command::CalloutSettings => self.callout_panel.open(),
+            Command::ImportObsidianCallouts => self.import_obsidian_callouts(),
 
             // View
             Command::ToggleSoftWrap => {

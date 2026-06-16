@@ -12,6 +12,8 @@ pub enum PromptKind {
     Replace,
     /// Save under a new path.
     SaveAs,
+    /// Path to an Obsidian vault / Callout Manager `data.json` to import.
+    ImportCallouts,
     /// Closing a modified buffer: Save / Discard / Cancel. Not a text prompt —
     /// the command-line key handler intercepts s/d/c instead of inserting.
     ConfirmClose,
@@ -23,6 +25,7 @@ impl PromptKind {
             PromptKind::Find => "find: ",
             PromptKind::Replace => "replace (from|to): ",
             PromptKind::SaveAs => "save as: ",
+            PromptKind::ImportCallouts => "import callouts from (vault or data.json): ",
             PromptKind::ConfirmClose => "unsaved changes — [s]ave  [d]iscard  [c]ancel",
         }
     }

@@ -88,6 +88,7 @@ pub enum Command {
     ToggleSoftWrap,
     Settings,
     CalloutSettings,
+    ImportObsidianCallouts,
 
     // Misc
     #[allow(dead_code)]
