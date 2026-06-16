@@ -24,7 +24,7 @@ pub fn right_text(buffer: &Buffer, plugin_segments: &[String], buffer_idx: usize
         parts.push(seg.clone());
     }
     parts.push(buffer.language.display_name().to_string());
-    parts.push(format!("Ln {}, Col {}", line + 1, col + 1));
+    parts.push(format!("{},{}", line + 1, col + 1));
     parts.push(format!("[{}/{}]", buffer_idx + 1, buffer_total));
 
     format!("{} ", parts.join("  │  "))
