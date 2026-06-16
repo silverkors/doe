@@ -1,6 +1,7 @@
 //! Terminal user interface: a diffing cell-grid screen plus the renderer,
 //! status bar and command line.
 
+pub mod callouts;
 pub mod commandline;
 pub mod layout;
 pub mod modal;

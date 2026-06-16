@@ -4,8 +4,10 @@
 //! fine with no config file at all; on first run a documented default config
 //! and theme are written for the user to edit.
 
+pub mod callouts;
 pub mod theme;
 
+use callouts::Callouts;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -16,6 +18,7 @@ pub struct Config {
     pub settings: Settings,
     pub keybindings: Keybindings,
     pub theme: Theme,
+    pub callouts: Callouts,
     /// Base config directory; used for theme loading and recovery/usage stores.
     pub config_dir: PathBuf,
     /// The user's own keybinding overrides (raw, for round-tripping on save).
@@ -119,8 +122,14 @@ impl Config {
         }
 
         let theme = Theme::load(&settings.theme, &config_dir.join("themes"));
+        let callouts = Callouts::load(&config_dir);
 
-        Config { settings, keybindings, theme, config_dir, user_keybindings }
+        Config { settings, keybindings, theme, callouts, config_dir, user_keybindings }
+    }
+
+    /// Persist callout styles to `callouts.toml`.
+    pub fn save_callouts(&self) {
+        self.callouts.save(&self.config_dir);
     }
 
     /// Reload the active theme after `settings.theme` changes.

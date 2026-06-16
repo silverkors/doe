@@ -85,6 +85,7 @@ pub fn parse(input: &str) -> Option<Command> {
         "open_buffers" | "buffers" => Command::OpenBuffers,
         "toggle_soft_wrap" => Command::ToggleSoftWrap,
         "settings" | "preferences" => Command::Settings,
+        "callout_settings" | "callouts" => Command::CalloutSettings,
 
         _ => return None,
     };

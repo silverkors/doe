@@ -17,6 +17,7 @@ use crate::search::{find, SearchState};
 use crate::syntax::Language;
 use crate::ui::commandline::{CommandLine, PromptKind};
 use crate::ui::modal::{BufferTab, ModalTab};
+use crate::ui::callouts::CalloutPanel;
 use crate::ui::settings::{self, SettingsPanel};
 use crate::ui::wrap;
 use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind, KeyModifiers};
@@ -37,6 +38,7 @@ pub struct App {
     pub modal_open: bool,
     pub modal_tab: ModalTab,
     pub settings_panel: SettingsPanel,
+    pub callout_panel: CalloutPanel,
     pub search: SearchState,
     pub status_message: String,
     pub plugins: PluginRegistry,
@@ -146,6 +148,7 @@ impl App {
             modal_open: false,
             modal_tab: ModalTab::Commands,
             settings_panel: SettingsPanel::default(),
+            callout_panel: CalloutPanel::default(),
             search: SearchState::default(),
             status_message: String::new(),
             plugins: PluginRegistry::with_builtins(),
@@ -403,6 +406,10 @@ impl App {
             self.handle_settings_key(ev);
             return;
         }
+        if self.callout_panel.open {
+            self.handle_callout_key(ev);
+            return;
+        }
         if self.modal_open {
             self.handle_modal_key(ev);
             return;
@@ -636,6 +643,41 @@ impl App {
             Left => self.adjust_selected_setting(-1),
             Right | Char(' ') => self.adjust_selected_setting(1),
             _ => {}
+        }
+    }
+
+    /// Key handling while the callout style panel is open.
+    fn handle_callout_key(&mut self, ev: KeyEvent) {
+        use crate::ui::callouts::{cycle_color, cycle_icon};
+        use crossterm::event::KeyCode::*;
+        let len = self.config.callouts.list.len();
+        match ev.code {
+            Esc | Enter => {
+                self.callout_panel.close();
+                self.config.save_callouts();
+            }
+            Up | BackTab => self.callout_panel.move_selection(-1, len),
+            Down | Tab => self.callout_panel.move_selection(1, len),
+            Left => self.adjust_callout(|c| c.color = cycle_color(c.color, -1)),
+            Right => self.adjust_callout(|c| c.color = cycle_color(c.color, 1)),
+            Char('[') => self.adjust_callout(|c| c.icon = cycle_icon(c.icon, -1)),
+            Char(']') => self.adjust_callout(|c| c.icon = cycle_icon(c.icon, 1)),
+            Char('i' | 'I') => self.import_obsidian_callouts(),
+            _ => {}
+        }
+    }
+
+    /// Import callout colours/icons from Obsidian's Callout Manager. Implemented
+    /// in the import commit; stubbed here so the panel's `i` key is wired.
+    fn import_obsidian_callouts(&mut self) {
+        self.set_status("Obsidian import: not available yet");
+    }
+
+    /// Apply `f` to the currently selected callout entry.
+    fn adjust_callout(&mut self, f: impl FnOnce(&mut crate::config::callouts::Callout)) {
+        let i = self.callout_panel.selected;
+        if let Some(c) = self.config.callouts.list.get_mut(i) {
+            f(c);
         }
     }
 
@@ -1041,6 +1083,7 @@ impl App {
             Command::OpenBuffers => self.open_modal(ModalTab::Buffers),
 
             Command::Settings => self.settings_panel.open(),
+            Command::CalloutSettings => self.callout_panel.open(),
 
             // View
             Command::ToggleSoftWrap => {

@@ -264,12 +264,15 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     } else if app.settings_panel.open {
         super::settings::render(screen, app);
         None
+    } else if app.callout_panel.open {
+        super::callouts::render(screen, app);
+        None
     } else {
         None
     };
 
     // --- final cursor position --------------------------------------------
-    screen.cursor = if app.settings_panel.open {
+    screen.cursor = if app.settings_panel.open || app.callout_panel.open {
         None // navigated with arrows; no text caret
     } else if app.modal_open {
         overlay_cursor
@@ -468,22 +471,6 @@ fn cursor_callout_block(buf: &Buffer, cur_line: usize) -> Option<(usize, usize)>
     Some((start, end))
 }
 
-/// Per-callout-type accent colour and icon, plus a tinted card background.
-fn callout_style(theme: &crate::config::theme::Theme, ty: &str) -> (Color, char) {
-    match ty {
-        "note" | "info" | "abstract" | "summary" | "tldr" => (theme.heading, '●'),
-        "tip" | "hint" | "important" => (theme.type_, '◆'),
-        "success" | "check" | "done" => (theme.string, '●'),
-        "question" | "help" | "faq" => (theme.type_, '?'),
-        "warning" | "caution" | "attention" => (theme.keyword, '▲'),
-        "danger" | "error" | "bug" | "failure" | "fail" | "missing" => (theme.tag, '■'),
-        "example" => (theme.callout, '»'),
-        "quote" | "cite" => (theme.quote, '"'),
-        "todo" => (theme.keyword, '●'),
-        _ => (theme.callout, '◆'),
-    }
-}
-
 fn lerp(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
 }
@@ -522,7 +509,7 @@ fn draw_callout_card_row(
     let ty = match role {
         PreviewRole::Top(t) | PreviewRole::Bottom(t) | PreviewRole::Header(t) | PreviewRole::Body(t) => t,
     };
-    let (accent, icon) = callout_style(theme, ty);
+    let (accent, icon) = app.config.callouts.style(ty);
     let card_bg = tint(theme.background, accent, 0.14);
     let x0 = layout.text_x();
     let right = app.width.saturating_sub(1);
