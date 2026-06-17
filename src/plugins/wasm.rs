@@ -25,14 +25,18 @@
 //! or editor internals it was not handed.
 
 use super::api::{Event, Plugin, PluginView};
+use ropey::Rope;
 use serde::Serialize;
 use std::cell::RefCell;
 use wasmi::{Caller, Engine, Instance, Linker, Memory, Module, Store, TypedFunc};
 
-/// Host-side state available to host functions (currently just captured logs).
+/// Host-side state available to host functions: captured logs, a status message
+/// the plugin asked to show, and the current document (for `doe_read`).
 #[derive(Default)]
 pub struct HostState {
     logs: Vec<String>,
+    status: Option<String>,
+    context: Option<Rope>,
 }
 
 /// Scalar editor view handed to a plugin (deliberately *not* the buffer text —
@@ -75,33 +79,7 @@ impl WasmPlugin {
     /// Load and instantiate a plugin from `.wasm` bytes. Returns an error string
     /// if the module is invalid or is missing the required ABI exports.
     pub fn load(file_name: &str, wasm: &[u8]) -> Result<WasmPlugin, String> {
-        let engine = Engine::default();
-        let module = Module::new(&engine, wasm).map_err(|e| format!("parse: {e}"))?;
-        let mut store = Store::new(&engine, HostState::default());
-
-        let mut linker = Linker::<HostState>::new(&engine);
-        // Optional logging host function; ignored if the module doesn't import it.
-        linker
-            .func_wrap("env", "doe_log", |mut caller: Caller<'_, HostState>, ptr: i32, len: i32| {
-                if let Some(s) = read_caller_str(&mut caller, ptr, len) {
-                    caller.data_mut().logs.push(s);
-                }
-            })
-            .map_err(|e| format!("linker: {e}"))?;
-
-        let instance = linker
-            .instantiate_and_start(&mut store, &module)
-            .map_err(|e| format!("instantiate: {e}"))?;
-
-        let memory = instance
-            .get_memory(&store, "memory")
-            .ok_or("missing `memory` export")?;
-        let alloc = instance
-            .get_typed_func::<i32, i32>(&store, "alloc")
-            .map_err(|_| "missing `alloc` export".to_string())?;
-        let dealloc = instance
-            .get_typed_func::<(i32, i32), ()>(&store, "dealloc")
-            .map_err(|_| "missing `dealloc` export".to_string())?;
+        let (mut store, instance, memory, alloc, dealloc) = instantiate(wasm)?;
 
         let f_name = instance.get_typed_func::<(), i64>(&store, "doe_name").ok();
         let f_status = instance.get_typed_func::<(i32, i32), i64>(&store, "doe_status").ok();
@@ -143,18 +121,55 @@ fn write_str(store: &mut Store<HostState>, memory: &Memory, alloc: &TypedFunc<i3
 }
 
 /// Instantiate a module and resolve the shared ABI exports (memory, alloc,
-/// dealloc), with the optional `doe_log` host import wired up.
+/// dealloc), wiring up the host imports (doe_log, doe_set_status, doe_read).
 fn instantiate(wasm: &[u8]) -> Result<(Store<HostState>, Instance, Memory, TypedFunc<i32, i32>, FuncStrUnit), String> {
     let engine = Engine::default();
     let module = Module::new(&engine, wasm).map_err(|e| format!("parse: {e}"))?;
     let mut store = Store::new(&engine, HostState::default());
     let mut linker = Linker::<HostState>::new(&engine);
+    // env.doe_log(ptr, len) — capture a debug line.
     linker
         .func_wrap("env", "doe_log", |mut caller: Caller<'_, HostState>, ptr: i32, len: i32| {
             if let Some(s) = read_caller_str(&mut caller, ptr, len) {
                 caller.data_mut().logs.push(s);
             }
         })
+        .map_err(|e| format!("linker: {e}"))?;
+    // env.doe_set_status(ptr, len) — ask the editor to show a status message.
+    linker
+        .func_wrap("env", "doe_set_status", |mut caller: Caller<'_, HostState>, ptr: i32, len: i32| {
+            if let Some(s) = read_caller_str(&mut caller, ptr, len) {
+                caller.data_mut().status = Some(s);
+            }
+        })
+        .map_err(|e| format!("linker: {e}"))?;
+    // env.doe_read(start, max, dst, cap) -> n — copy up to `cap` bytes of the
+    // document text from char `start` (capped at `max` chars) into guest memory
+    // at `dst`, returning the byte count written.
+    linker
+        .func_wrap(
+            "env",
+            "doe_read",
+            |mut caller: Caller<'_, HostState>, start: i32, max: i32, dst: i32, cap: i32| -> i32 {
+                let text = match &caller.data().context {
+                    Some(rope) => {
+                        let s = (start.max(0) as usize).min(rope.len_chars());
+                        let e = (s + max.max(0) as usize).min(rope.len_chars());
+                        rope.slice(s..e).to_string()
+                    }
+                    None => return 0,
+                };
+                let bytes = text.into_bytes();
+                let n = bytes.len().min(cap.max(0) as usize);
+                match caller.get_export("memory").and_then(|e| e.into_memory()) {
+                    Some(mem) => {
+                        let _ = mem.write(&mut caller, dst as usize, &bytes[..n]);
+                        n as i32
+                    }
+                    None => 0,
+                }
+            },
+        )
         .map_err(|e| format!("linker: {e}"))?;
     let instance = linker
         .instantiate_and_start(&mut store, &module)
@@ -289,6 +304,14 @@ impl Plugin for WasmPlugin {
         let json = read_packed(&self.memory, &mut store, &self.dealloc, packed);
         serde_json::from_str::<Vec<(String, String)>>(&json).unwrap_or_default()
     }
+
+    fn set_context(&mut self, rope: &Rope) {
+        self.store.get_mut().data_mut().context = Some(rope.clone());
+    }
+
+    fn take_status(&mut self) -> Option<String> {
+        self.store.get_mut().data_mut().status.take()
+    }
 }
 
 fn event_json(event: &Event) -> EventJson {
@@ -400,5 +423,37 @@ mod tests {
         // The plugin fixture has no doe_eval, so it isn't an evaluator.
         let wasm = wat::parse_str(WAT).unwrap();
         assert!(WasmEvaluator::load(&wasm).is_none());
+    }
+
+    // A plugin that, on each event, reads the document and echoes it as a status
+    // message — exercising the doe_read and doe_set_status host functions.
+    const HOST_FN_WAT: &str = r#"
+        (module
+          (import "env" "doe_read" (func $read (param i32 i32 i32 i32) (result i32)))
+          (import "env" "doe_set_status" (func $set_status (param i32 i32)))
+          (memory (export "memory") 1)
+          (global $heap (mut i32) (i32.const 1024))
+          (func (export "alloc") (param i32) (result i32)
+            (local $p i32)
+            (local.set $p (global.get $heap))
+            (global.set $heap (i32.add (global.get $heap) (local.get 0)))
+            (local.get $p))
+          (func (export "dealloc") (param i32 i32))
+          (func (export "doe_on_event") (param i32 i32)
+            (local $n i32)
+            (local.set $n (call $read (i32.const 0) (i32.const 64) (i32.const 512) (i32.const 64)))
+            (call $set_status (i32.const 512) (local.get $n))))
+    "#;
+
+    #[test]
+    fn host_read_and_set_status() {
+        use ropey::Rope;
+        let wasm = wat::parse_str(HOST_FN_WAT).unwrap();
+        let mut p = WasmPlugin::load("host.wasm", &wasm).expect("loads");
+        p.set_context(&Rope::from_str("hello world"));
+        p.on_event(&Event::BufferChange);
+        assert_eq!(p.take_status().as_deref(), Some("hello world"));
+        // Status is taken once.
+        assert_eq!(p.take_status(), None);
     }
 }

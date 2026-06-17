@@ -28,10 +28,18 @@ impl PluginRegistry {
         self.plugins.push(plugin);
     }
 
-    pub fn dispatch(&mut self, event: &Event) {
+    /// Fan an event out to every plugin, installing `rope` as the document they
+    /// may read, and collect any status messages they asked to show.
+    pub fn dispatch(&mut self, event: &Event, rope: &ropey::Rope) -> Vec<String> {
+        let mut statuses = Vec::new();
         for p in &mut self.plugins {
+            p.set_context(rope);
             p.on_event(event);
+            if let Some(s) = p.take_status() {
+                statuses.push(s);
+            }
         }
+        statuses
     }
 
     pub fn status_segments(&self, view: &PluginView) -> Vec<String> {

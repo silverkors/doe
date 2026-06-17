@@ -67,7 +67,8 @@ doe a.md b.rs c.toml   # open several files as buffers
 - **Incremental rendering** — a diffing cell grid redraws only changed cells.
 - **Plugin system** — internal API (events, buffer view, status segments,
   command aliases) plus a **sandboxed WASM host** (wasmi, no WASI/fs/network):
-  drop `*.wasm` in `~/.config/doe/plugins/` and they load on startup. See the
+  drop `*.wasm` in `~/.config/doe/plugins/` and they load on startup. Plugins
+  can read the document and set status via host functions. See the
   [plugin ABI](docs/wasm-plugins.md).
 - **Dynamic documents** — fenced code blocks marked `run` execute and their
   output is spliced into a `<!-- doe:output -->` region (`Alt+Enter` / palette

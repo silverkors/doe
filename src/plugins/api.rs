@@ -52,4 +52,13 @@ pub trait Plugin {
     fn commands(&self) -> Vec<(String, String)> {
         Vec::new()
     }
+
+    /// Install the current document so the plugin can read it (e.g. WASM
+    /// `doe_read`) while handling the next event. No-op for plugins that don't.
+    fn set_context(&mut self, _rope: &Rope) {}
+
+    /// Take any status message the plugin asked to show during the last event.
+    fn take_status(&mut self) -> Option<String> {
+        None
+    }
 }

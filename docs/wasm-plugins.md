@@ -68,11 +68,24 @@ alias becomes available on the command line and bindable like any command.
 
 ### Host functions
 
-The host provides one optional import, ignored if unused:
+The host provides these imports under `env` (all optional — import only what
+you use):
 
 ```
-(import "env" "doe_log" (func (param i32 i32)))   ;; (ptr, len) UTF-8
+(import "env" "doe_log"        (func (param i32 i32)))            ;; (ptr, len) debug line
+(import "env" "doe_set_status" (func (param i32 i32)))            ;; (ptr, len) show a status message
+(import "env" "doe_read"       (func (param i32 i32 i32 i32) (result i32)))
 ```
+
+- **`doe_set_status(ptr, len)`** — show a UTF-8 status message in the editor.
+  Collected after the current event; the most recent wins.
+- **`doe_read(start, max, dst, cap) -> n`** — copy up to `cap` bytes of the
+  current document (from char `start`, at most `max` chars) into guest memory at
+  `dst`, returning the byte count written. The document is the one in focus when
+  the event fired; reads outside an event see nothing (returns 0).
+
+These make a plugin able to inspect the buffer and report back — e.g. a real
+word-count or lint segment computed on `buffer_change`.
 
 ## Evaluator modules (dynamic documents)
 

@@ -205,7 +205,7 @@ impl App {
 
         let opened: Vec<PathBuf> = app.buffers.iter().filter_map(|b| b.path.clone()).collect();
         for p in &opened {
-            app.plugins.dispatch(&Event::OpenFile(p.clone()));
+            app.notify(Event::OpenFile(p.clone()));
         }
         for p in opened {
             app.file_picker.record_open(&p);
@@ -946,7 +946,7 @@ impl App {
                     } else {
                         self.active_buffer_mut().set_single_cursor(pos, false);
                     }
-                    self.plugins.dispatch(&Event::CursorMove);
+                    self.notify(Event::CursorMove);
                     self.ensure_cursor_visible();
                 }
             }
@@ -1217,11 +1217,11 @@ impl App {
             // Match highlights and diagnostics are invalidated by edits.
             self.search.matches.clear();
             self.diagnostics.clear();
-            self.plugins.dispatch(&Event::BufferChange);
+            self.notify(Event::BufferChange);
             self.ensure_cursor_visible();
         }
         if moved {
-            self.plugins.dispatch(&Event::CursorMove);
+            self.notify(Event::CursorMove);
             self.ensure_cursor_visible();
         }
     }
@@ -1246,7 +1246,7 @@ impl App {
         } else {
             self.autosave(); // final flush so the very latest edits are kept
         }
-        self.plugins.dispatch(&Event::Exit);
+        self.notify(Event::Exit);
         self.should_quit = true;
     }
 
@@ -1267,7 +1267,7 @@ impl App {
                 let name = self.active_buffer().name();
                 self.set_status(format!("saved {name}"));
                 if let Some(p) = self.active_buffer().path.clone() {
-                    self.plugins.dispatch(&Event::SaveFile(p));
+                    self.notify(Event::SaveFile(p));
                 }
             }
             Err(e) => self.set_status(format!("save failed: {e:#}")),
@@ -1283,7 +1283,7 @@ impl App {
             Ok(()) => {
                 let name = self.active_buffer().name();
                 self.set_status(format!("saved {name}"));
-                self.plugins.dispatch(&Event::SaveFile(path));
+                self.notify(Event::SaveFile(path));
             }
             Err(e) => self.set_status(format!("save failed: {e:#}")),
         }
@@ -1310,7 +1310,7 @@ impl App {
                 self.top_subrow = 0;
                 self.left_col = 0;
                 self.set_status(format!("opened {}", files::display_path(&path)));
-                self.plugins.dispatch(&Event::OpenFile(path));
+                self.notify(Event::OpenFile(path));
                 self.ensure_cursor_visible();
             }
             Err(e) => self.set_status(format!("open failed: {e:#}")),
@@ -1534,6 +1534,16 @@ impl App {
         }
     }
 
+    /// Dispatch an editor event to plugins (handing them the current document
+    /// to read) and surface any status message they set.
+    fn notify(&mut self, event: Event) {
+        let rope = self.active_buffer().rope.clone();
+        let statuses = self.plugins.dispatch(&event, &rope);
+        if let Some(s) = statuses.into_iter().next_back() {
+            self.set_status(s);
+        }
+    }
+
     /// Evaluate one block's source with the evaluator registered for `lang`.
     fn eval_block(&mut self, lang: &str, source: &str, doc_path: Option<&Path>) -> Option<crate::eval::EvalResult> {
         let ev = self.evaluators.iter_mut().find(|e| e.handles(lang))?;
@@ -1592,7 +1602,7 @@ impl App {
         if !edits.is_empty() {
             self.active_buffer_mut().splice_segments(&edits);
             self.ensure_cursor_visible();
-            self.plugins.dispatch(&Event::BufferChange);
+            self.notify(Event::BufferChange);
         }
         self.set_status(match (ran, errors) {
             (0, _) => "nothing ran".to_string(),
@@ -1648,7 +1658,7 @@ impl App {
             // Select the match.
             b.cursors[0].anchor = s;
             b.primary = 0;
-            self.plugins.dispatch(&Event::CursorMove);
+            self.notify(Event::CursorMove);
             self.ensure_cursor_visible();
         } else {
             self.set_status("no matches");
@@ -1667,7 +1677,7 @@ impl App {
         let to_apply: Vec<(usize, usize)> = if all { matches } else { vec![matches[0]] };
         self.active_buffer_mut().replace_ranges(&to_apply, to);
         self.search.matches.clear();
-        self.plugins.dispatch(&Event::BufferChange);
+        self.notify(Event::BufferChange);
         self.ensure_cursor_visible();
         self.set_status(format!("replaced {count} occurrence(s)"));
     }
