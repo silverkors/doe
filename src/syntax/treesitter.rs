@@ -9,46 +9,65 @@
 //! [`super::highlighter_for`] keeps very large buffers off this path so the
 //! whole-buffer parse never dominates a frame.
 
-use super::highlighter::{Highlighter, LineState, Span, StyleKind};
+use super::highlighter::{Span, StyleKind};
 use super::Language;
 use ropey::Rope;
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Language as TsLanguage, Parser, Query, QueryCursor};
+use tree_sitter::{Language as TsLanguage, Query, QueryCursor, Tree};
+#[cfg(test)]
+use super::highlighter::{Highlighter, LineState};
+#[cfg(test)]
+use tree_sitter::Parser;
 
+/// A standalone tree-sitter highlighter that parses its own input. The editor
+/// highlights through [`super::cache::SyntaxCache`]; this type now backs the
+/// span-building tests.
+#[cfg(test)]
 pub struct TreeSitterHighlighter {
     /// Spans per buffer line, columns expressed in char offsets within the line.
     line_spans: Vec<Vec<Span>>,
 }
 
+#[cfg(test)]
 impl TreeSitterHighlighter {
     /// Parse `rope` with `lang`'s grammar and precompute per-line spans. Returns
     /// `None` if the language has no grammar or the source fails to parse.
+    /// (The editor highlights through [`super::cache::SyntaxCache`], which reuses
+    /// a cached parse; this constructor parses fresh and is used by tests.)
     pub fn new(lang: Language, rope: &Rope) -> Option<Self> {
         let (language, query_src) = grammar(lang)?;
         let mut parser = Parser::new();
         parser.set_language(&language).ok()?;
         let source = rope.to_string();
         let tree = parser.parse(source.as_bytes(), None)?;
-        let query = Query::new(&language, &query_src).ok()?;
-        let names = query.capture_names();
-
-        let mut line_spans: Vec<Vec<Span>> = vec![Vec::new(); rope.len_lines()];
-        let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
-        while let Some(m) = matches.next() {
-            for cap in m.captures {
-                let name = names[cap.index as usize];
-                let node = cap.node;
-                if let Some(kind) = map_capture(name, node.kind()) {
-                    let r = node.byte_range();
-                    push_span(&mut line_spans, rope, r.start, r.end, kind);
-                }
-            }
-        }
-        Some(TreeSitterHighlighter { line_spans })
+        Some(TreeSitterHighlighter { line_spans: build_spans(&tree, &language, &query_src, &source, rope) })
     }
 }
 
+/// Run a grammar's highlights query over `tree` and bucket the captures into
+/// per-line [`Span`]s (char columns). Shared by the highlighter and the cache.
+pub(crate) fn build_spans(tree: &Tree, language: &TsLanguage, query_src: &str, source: &str, rope: &Rope) -> Vec<Vec<Span>> {
+    let Ok(query) = Query::new(language, query_src) else {
+        return vec![Vec::new(); rope.len_lines()];
+    };
+    let names = query.capture_names();
+    let mut line_spans: Vec<Vec<Span>> = vec![Vec::new(); rope.len_lines()];
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+    while let Some(m) = matches.next() {
+        for cap in m.captures {
+            let name = names[cap.index as usize];
+            let node = cap.node;
+            if let Some(kind) = map_capture(name, node.kind()) {
+                let r = node.byte_range();
+                push_span(&mut line_spans, rope, r.start, r.end, kind);
+            }
+        }
+    }
+    line_spans
+}
+
+#[cfg(test)]
 impl Highlighter for TreeSitterHighlighter {
     fn highlight_line(&self, line: usize, _text: &str, _state: &mut LineState) -> Vec<Span> {
         self.line_spans.get(line).cloned().unwrap_or_default()
@@ -58,7 +77,7 @@ impl Highlighter for TreeSitterHighlighter {
 /// Map a grammar's `LANGUAGE` + highlights query, or `None` if unsupported.
 /// The query is owned because some languages (TypeScript) concatenate the
 /// queries of a base grammar (JavaScript) with their own.
-fn grammar(lang: Language) -> Option<(TsLanguage, String)> {
+pub(crate) fn grammar(lang: Language) -> Option<(TsLanguage, String)> {
     let (language, query): (TsLanguage, String) = match lang {
         Language::Rust => (
             tree_sitter_rust::LANGUAGE.into(),

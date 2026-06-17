@@ -236,6 +236,8 @@ fn default_keybindings() -> Keybindings {
         ("ctrl-pagedown", "next_buffer"),
         ("alt-up", "add_cursor_above"),
         ("alt-down", "add_cursor_below"),
+        ("alt-shift-up", "expand_selection"),
+        ("alt-shift-down", "shrink_selection"),
         ("left", "move_left"),
         ("right", "move_right"),
         ("up", "move_up"),

@@ -90,6 +90,10 @@ pub enum Command {
     CalloutSettings,
     ImportObsidianCallouts,
 
+    // Structural editing (tree-sitter)
+    ExpandSelection,
+    ShrinkSelection,
+
     // Dynamic documents
     RunCodeBlock,
     RunDocument,

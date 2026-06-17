@@ -89,6 +89,8 @@ pub fn parse(input: &str) -> Option<Command> {
         "import_callouts" | "import_obsidian_callouts" => Command::ImportObsidianCallouts,
         "run_code_block" | "run_block" => Command::RunCodeBlock,
         "run_document" | "run_all" => Command::RunDocument,
+        "expand_selection" => Command::ExpandSelection,
+        "shrink_selection" => Command::ShrinkSelection,
 
         _ => return None,
     };

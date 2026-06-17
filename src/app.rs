@@ -51,12 +51,16 @@ pub struct App {
     pub search: SearchState,
     pub status_message: String,
     pub plugins: PluginRegistry,
+    /// Revision-keyed tree-sitter parse cache (highlighting + structural ops).
+    pub syntax: crate::syntax::cache::SyntaxCache,
     /// Dynamic-document code evaluators, keyed by language at lookup time.
     evaluators: Vec<Box<dyn crate::eval::Evaluator>>,
     /// Per-folder trust for running document code.
     trust: crate::eval::trust::TrustStore,
     /// A run awaiting a trust decision (set while the trust prompt is up).
     pending_run: Option<RunScope>,
+    /// Prior selections for shrink-selection, pushed on each expand.
+    expand_stack: Vec<(usize, usize)>,
     pub width: u16,
     pub height: u16,
     pub should_quit: bool,
@@ -168,9 +172,11 @@ impl App {
             search: SearchState::default(),
             status_message: String::new(),
             plugins: PluginRegistry::with_builtins(),
+            syntax: crate::syntax::cache::SyntaxCache::new(),
             evaluators: vec![Box::new(crate::eval::lua::LuaEvaluator::default())],
             trust,
             pending_run: None,
+            expand_stack: Vec::new(),
             width: 80,
             height: 24,
             should_quit: false,
@@ -1022,6 +1028,11 @@ impl App {
         let mut edited = false;
         let mut moved = false;
 
+        // Any command other than expand/shrink invalidates the selection stack.
+        if !matches!(command, Command::ExpandSelection | Command::ShrinkSelection) {
+            self.expand_stack.clear();
+        }
+
         match command {
             // Files
             Command::Save => self.do_save(),
@@ -1173,6 +1184,8 @@ impl App {
             Command::ImportObsidianCallouts => self.import_obsidian_callouts(),
             Command::RunCodeBlock => self.run_code(RunScope::Block),
             Command::RunDocument => self.run_code(RunScope::Document),
+            Command::ExpandSelection => self.expand_selection(),
+            Command::ShrinkSelection => self.shrink_selection(),
 
             // View
             Command::ToggleSoftWrap => {
@@ -1339,6 +1352,37 @@ impl App {
                 self.set_status("did not run (folder not trusted)");
             }
             _ => {}
+        }
+    }
+
+    // --- structural editing ------------------------------------------------
+
+    /// Grow the primary selection to the smallest enclosing syntax node.
+    fn expand_selection(&mut self) {
+        let cur = self.active_buffer().primary_cursor();
+        let (s, e) = (cur.anchor.min(cur.head), cur.anchor.max(cur.head));
+        let grown = self
+            .syntax
+            .with_tree(self.active_buffer(), |doc| crate::syntax::structure::expand(&doc, s, e))
+            .flatten();
+        match grown {
+            Some((ns, ne)) => {
+                self.expand_stack.push((cur.anchor, cur.head));
+                self.active_buffer_mut().set_selection(ns, ne);
+                self.ensure_cursor_visible();
+            }
+            None => self.set_status("expand: no enclosing node"),
+        }
+    }
+
+    /// Undo the last expand, restoring the previous selection.
+    fn shrink_selection(&mut self) {
+        match self.expand_stack.pop() {
+            Some((anchor, head)) => {
+                self.active_buffer_mut().set_selection(anchor, head);
+                self.ensure_cursor_visible();
+            }
+            None => self.set_status("shrink: nothing to shrink"),
         }
     }
 

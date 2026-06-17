@@ -713,6 +713,16 @@ impl Buffer {
         self.history.break_coalescing();
     }
 
+    /// Replace all cursors with a single selection from `anchor` to `head`.
+    pub fn set_selection(&mut self, anchor: usize, head: usize) {
+        let n = self.rope.len_chars();
+        let mut c = Cursor::new(head.min(n));
+        c.anchor = anchor.min(n);
+        self.cursors = vec![c];
+        self.primary = 0;
+        self.history.break_coalescing();
+    }
+
     pub fn add_cursor_at(&mut self, pos: usize) {
         self.cursors.push(Cursor::new(pos));
         self.primary = self.cursors.len() - 1;

@@ -2,9 +2,11 @@
 //! selects a [`Highlighter`]. Markdown gets a dedicated highlighter; other
 //! languages share a keyword-driven code highlighter.
 
+pub mod cache;
 pub mod code;
 pub mod highlighter;
 pub mod markdown;
+pub mod structure;
 pub mod treesitter;
 
 pub use highlighter::{Highlighter, LineState, StyleKind};
@@ -120,24 +122,13 @@ impl Language {
     }
 }
 
-/// Above this buffer size we skip the whole-buffer tree-sitter parse and use
-/// the cheap line-based highlighter, preserving the large-file cost guarantee.
-const TREE_SITTER_MAX_BYTES: usize = 1_000_000;
-
-/// Build the appropriate highlighter for a buffer. Markdown keeps its dedicated
-/// highlighter; other languages prefer a tree-sitter grammar when one is
-/// vendored and the buffer is small enough, else fall back to the keyword-driven
-/// [`code::CodeHighlighter`].
+/// The line-based highlighter for a buffer the tree-sitter cache does *not*
+/// handle: Markdown gets its dedicated highlighter, everything else the
+/// keyword-driven [`code::CodeHighlighter`]. Tree-sitter languages are
+/// highlighted through [`cache::SyntaxCache`] instead.
 pub fn highlighter_for(buf: &Buffer) -> Box<dyn Highlighter> {
     match buf.language {
         Language::Markdown => Box::new(markdown::MarkdownHighlighter),
-        other => {
-            if buf.rope.len_bytes() <= TREE_SITTER_MAX_BYTES {
-                if let Some(h) = treesitter::TreeSitterHighlighter::new(other, &buf.rope) {
-                    return Box::new(h);
-                }
-            }
-            Box::new(code::CodeHighlighter::new(other))
-        }
+        other => Box::new(code::CodeHighlighter::new(other)),
     }
 }

@@ -39,7 +39,10 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     let preview_outputs = preview_callouts;
     let cursor_output = if preview_outputs { output_region_at(buf, cur_line) } else { None };
 
-    let highlighter = highlighter_for(buf);
+    // Tree-sitter languages highlight through the parse cache (no per-frame
+    // parse); everything else uses a line-based highlighter.
+    let tree_highlighted = settings.syntax_highlighting && app.syntax.handles(buf);
+    let highlighter = if tree_highlighted { None } else { Some(highlighter_for(buf)) };
     // Seed fence state from the lines above the viewport so a code block whose
     // opening fence has scrolled off the top still highlights correctly.
     let mut state = LineState { in_code_block: app.top_in_code_block, ..Default::default() };
@@ -145,7 +148,11 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
             bolds = vec![false; line_len];
             itals = vec![false; line_len];
             if settings.syntax_highlighting && line_len <= MAX_HIGHLIGHT_LINE {
-                for sp in highlighter.highlight_line(vr.line, &text, &mut state) {
+                let spans = match &highlighter {
+                    Some(h) => h.highlight_line(vr.line, &text, &mut state),
+                    None => app.syntax.highlight(buf, vr.line),
+                };
+                for sp in spans {
                     for c in sp.start..sp.end.min(line_len) {
                         kinds[c] = sp.kind;
                         bolds[c] = sp.bold;
