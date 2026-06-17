@@ -27,8 +27,8 @@ pub struct EvalResult {
 }
 
 /// A backend that can run code for one or more languages. Registered in the
-/// editor's evaluator table keyed by language, mirroring command registration.
+/// editor's evaluator table; the first one that `handles` a language runs it.
 pub trait Evaluator {
-    fn languages(&self) -> &[&str];
+    fn handles(&self, lang: &str) -> bool;
     fn eval(&mut self, req: &EvalRequest) -> EvalResult;
 }

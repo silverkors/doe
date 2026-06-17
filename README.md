@@ -74,7 +74,10 @@ doe a.md b.rs c.toml   # open several files as buffers
   "Run Code Block"), shown as a **live "computed" card** (markers concealed,
   raw when the cursor is inside). A **sandboxed Lua** evaluator is built in (no
   fs/net, with a timeout and output cap); running is gated by **per-folder
-  trust** (Once / Always / Never). See the [design](docs/dynamic-documents.md).
+  trust** (Once / Always / Never). `auto` blocks run on save in trusted
+  folders, and a block that errors shows a **diagnostic** in the gutter.
+  Other languages plug in as WASM evaluator modules. See the
+  [design](docs/dynamic-documents.md).
 
 ## The modal (Spotlight-style, tabbed)
 

@@ -22,8 +22,8 @@ impl Default for LuaEvaluator {
 }
 
 impl Evaluator for LuaEvaluator {
-    fn languages(&self) -> &[&str] {
-        &["lua"]
+    fn handles(&self, lang: &str) -> bool {
+        lang == "lua"
     }
 
     fn eval(&mut self, req: &EvalRequest) -> EvalResult {

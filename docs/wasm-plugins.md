@@ -74,6 +74,21 @@ The host provides one optional import, ignored if unused:
 (import "env" "doe_log" (func (param i32 i32)))   ;; (ptr, len) UTF-8
 ```
 
+## Evaluator modules (dynamic documents)
+
+A module that exports `doe_eval` is loaded as a **code evaluator** for dynamic
+documents instead of a status/command plugin (so a `.wasm` is one or the other).
+In addition to `memory`/`alloc`/`dealloc` it exports:
+
+| Export | Signature | Returns |
+|--------|-----------|---------|
+| `doe_eval_languages` | `() -> i64` | JSON array of language names, e.g. `["python"]` |
+| `doe_eval` | `(lang_ptr, lang_len, src_ptr, src_len) -> i64` | the evaluated output string |
+
+This is how languages beyond the built-in Lua (Python, JS, …) plug in: ship a
+WASM module that embeds the interpreter and answers `doe_eval`. A `run` block's
+`lang` is matched against every evaluator's `doe_eval_languages`.
+
 ## Minimal example (WAT)
 
 ```wat

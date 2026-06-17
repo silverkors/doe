@@ -23,13 +23,21 @@ use crate::ui::wrap;
 use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind, KeyModifiers};
 use std::path::{Path, PathBuf};
 
+/// A diagnostic pinned to a buffer line (e.g. a failed code block).
+pub struct Diagnostic {
+    pub line: usize,
+    pub message: String,
+}
+
 /// What a dynamic-document run covers.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum RunScope {
     /// The runnable block under the cursor.
     Block,
     /// Every runnable block in the document.
     Document,
+    /// Only `auto` blocks (triggered by save in a trusted folder).
+    Auto,
 }
 
 pub struct App {
@@ -62,6 +70,8 @@ pub struct App {
     pending_run: Option<RunScope>,
     /// Prior selections for shrink-selection, pushed on each expand.
     expand_stack: Vec<(usize, usize)>,
+    /// Diagnostics (currently from code-block evaluation), shown in the gutter.
+    pub diagnostics: Vec<Diagnostic>,
     pub width: u16,
     pub height: u16,
     pub should_quit: bool,
@@ -179,6 +189,7 @@ impl App {
             trust,
             pending_run: None,
             expand_stack: Vec::new(),
+            diagnostics: Vec::new(),
             width: 80,
             height: 24,
             should_quit: false,
@@ -188,14 +199,9 @@ impl App {
             disk_warned: false,
             last_drag_row: 0,
         };
-        // Load sandboxed WASM plugins from <config>/plugins/*.wasm.
-        let plugins_dir = app.config.config_dir.join("plugins");
-        let (loaded, errors) = app.plugins.load_wasm_dir(&plugins_dir);
-        if let Some(err) = errors.first() {
-            app.set_status(format!("plugin error — {err}"));
-        } else if loaded > 0 {
-            app.set_status(format!("loaded {loaded} plugin(s)"));
-        }
+        // Load sandboxed WASM modules from <config>/plugins/*.wasm — those that
+        // export `doe_eval` register as document evaluators, the rest as plugins.
+        app.load_wasm_modules();
 
         let opened: Vec<PathBuf> = app.buffers.iter().filter_map(|b| b.path.clone()).collect();
         for p in &opened {
@@ -1208,8 +1214,9 @@ impl App {
         }
 
         if edited {
-            // Match highlights are invalidated by edits; clear until next find.
+            // Match highlights and diagnostics are invalidated by edits.
             self.search.matches.clear();
+            self.diagnostics.clear();
             self.plugins.dispatch(&Event::BufferChange);
             self.ensure_cursor_visible();
         }
@@ -1248,6 +1255,9 @@ impl App {
             self.open_prompt(PromptKind::SaveAs, "");
             return;
         }
+        // Run `auto` blocks first (trusted Markdown only) so the saved file
+        // includes fresh output.
+        self.run_auto_on_save();
         if self.config.settings.trim_trailing_whitespace_on_save {
             self.active_buffer_mut().trim_trailing_whitespace();
         }
@@ -1468,9 +1478,65 @@ impl App {
         }
     }
 
+    /// Run `auto` blocks when saving a trusted Markdown document. Never prompts:
+    /// untrusted documents simply skip (auto-run must not surprise you).
+    fn run_auto_on_save(&mut self) {
+        if self.active_buffer().language != crate::syntax::Language::Markdown {
+            return;
+        }
+        if self.active_doc_dir().is_some_and(|d| self.trust.is_trusted(&d)) {
+            self.do_run(RunScope::Auto);
+        }
+    }
+
+    /// Load WASM modules from `<config>/plugins`: `doe_eval` modules become
+    /// document evaluators, the rest become plugins. Bad modules are skipped.
+    fn load_wasm_modules(&mut self) {
+        let dir = self.config.config_dir.join("plugins");
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        let (mut evals, mut plugins) = (0u32, 0u32);
+        let mut first_err: Option<String> = None;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("wasm") {
+                continue;
+            }
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("plugin").to_string();
+            let bytes = match std::fs::read(&path) {
+                Ok(b) => b,
+                Err(e) => {
+                    first_err.get_or_insert(format!("{name}: {e}"));
+                    continue;
+                }
+            };
+            if let Some(ev) = crate::plugins::wasm::WasmEvaluator::load(&bytes) {
+                self.evaluators.push(Box::new(ev));
+                evals += 1;
+            } else {
+                match crate::plugins::wasm::WasmPlugin::load(&name, &bytes) {
+                    Ok(p) => {
+                        self.plugins.register(Box::new(p));
+                        plugins += 1;
+                    }
+                    Err(e) => {
+                        first_err.get_or_insert(format!("{name}: {e}"));
+                    }
+                }
+            }
+        }
+        if let Some(err) = first_err {
+            self.set_status(format!("plugin error — {err}"));
+        } else if evals + plugins > 0 {
+            self.set_status(format!("loaded {plugins} plugin(s), {evals} evaluator(s)"));
+        }
+    }
+
     /// Evaluate one block's source with the evaluator registered for `lang`.
     fn eval_block(&mut self, lang: &str, source: &str, doc_path: Option<&Path>) -> Option<crate::eval::EvalResult> {
-        let ev = self.evaluators.iter_mut().find(|e| e.languages().contains(&lang))?;
+        let ev = self.evaluators.iter_mut().find(|e| e.handles(lang))?;
         Some(ev.eval(&crate::eval::EvalRequest { lang, source, doc_path }))
     }
 
@@ -1486,13 +1552,19 @@ impl App {
         let blocks: Vec<block::ParsedBlock> = match scope {
             RunScope::Block => block::block_at_line(&lines, cursor_line).into_iter().collect(),
             RunScope::Document => block::parse_blocks(&lines),
+            RunScope::Auto => block::parse_blocks(&lines).into_iter().filter(|b| b.directives.auto).collect(),
         };
         if blocks.is_empty() {
-            self.set_status("no runnable code block here");
+            // Auto-run on save is silent when there's nothing to do.
+            if scope != RunScope::Auto {
+                self.set_status("no runnable code block here");
+            }
             return;
         }
 
         let doc_path = self.active_buffer().path.clone();
+        // Diagnostics for the blocks being run are recomputed from this run.
+        self.diagnostics.clear();
         let mut edits: Vec<(usize, usize, String)> = Vec::new();
         let (mut ran, mut errors) = (0u32, 0u32);
         for blk in &blocks {
@@ -1501,8 +1573,9 @@ impl App {
                 continue;
             };
             ran += 1;
-            if result.error.is_some() {
+            if let Some(err) = &result.error {
                 errors += 1;
+                self.diagnostics.push(Diagnostic { line: blk.fence_open_line, message: err.clone() });
             }
             if matches!(blk.directives.out, OutMode::Hidden) {
                 continue; // ran for side effects; write nothing
@@ -1696,6 +1769,29 @@ mod tests {
         app.run_code(RunScope::Block);
         assert_eq!(app.command.kind, Some(PromptKind::ConfirmTrust));
         assert!(!app.active_buffer().rope.to_string().contains("doe:output"));
+    }
+
+    #[test]
+    fn auto_scope_runs_only_auto_blocks() {
+        let mut app = markdown_app("```lua run auto\nreturn 1\n```\n```lua run\nreturn 2\n```\n");
+        let dir = app.active_doc_dir().unwrap();
+        app.trust.trust_session(dir);
+        app.do_run(RunScope::Auto);
+        let out = app.active_buffer().rope.to_string();
+        assert!(out.contains("doe:output -->\n1\n"), "auto block ran: {out}");
+        assert!(!out.contains("\n2\n<!-- /doe:output"), "non-auto block must not run: {out}");
+    }
+
+    #[test]
+    fn failing_block_records_a_diagnostic() {
+        let mut app = markdown_app("```lua run\nreturn nope.bad\n```\n");
+        let dir = app.active_doc_dir().unwrap();
+        app.trust.trust_session(dir);
+        let pos = app.active_buffer().rope.line_to_char(1);
+        app.active_buffer_mut().set_single_cursor(pos, false);
+        app.run_code(RunScope::Block);
+        assert_eq!(app.diagnostics.len(), 1);
+        assert_eq!(app.diagnostics[0].line, 0); // pinned to the fence line
     }
 
     #[test]

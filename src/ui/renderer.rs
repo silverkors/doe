@@ -328,6 +328,10 @@ fn draw_gutter(screen: &mut Screen, layout: &Layout, app: &App, ln: usize, cur_l
     let s = format!("{num:>width$} ");
     let fg = if is_current { theme.line_number_current } else { theme.line_number };
     screen.put_str(0, y, &s, fg, theme.background, is_current, false);
+    // Diagnostic marker in the leftmost gutter cell.
+    if app.diagnostics.iter().any(|d| d.line == ln) {
+        screen.set(0, y, Cell { ch: '●', fg: theme.tag, bg: theme.background, bold: true, italic: false });
+    }
 }
 
 fn draw_status_bar(screen: &mut Screen, app: &App, layout: &Layout) {
@@ -339,13 +343,18 @@ fn draw_status_bar(screen: &mut Screen, app: &App, layout: &Layout) {
         screen.set(x, y, Cell { ch: ' ', fg: theme.statusbar_fg, bg: theme.statusbar_bg, bold: false, italic: false });
     }
 
-    // Left shows a transient message when present, otherwise the file name.
-    let left = if app.status_message.is_empty() {
-        statusbar::left_text(buf)
-    } else {
+    // Left shows a transient message, else a diagnostic on the cursor line, else
+    // the file name.
+    let cur_line = buf.pos_to_line_col(buf.primary_cursor().head).0;
+    let cursor_diag = app.diagnostics.iter().find(|d| d.line == cur_line);
+    let left = if !app.status_message.is_empty() {
         format!(" {}", app.status_message)
+    } else if let Some(d) = cursor_diag {
+        format!(" ● {}", d.message)
+    } else {
+        statusbar::left_text(buf)
     };
-    let bold = app.status_message.is_empty();
+    let bold = app.status_message.is_empty() && cursor_diag.is_none();
     screen.put_str(0, y, &left, theme.statusbar_fg, theme.statusbar_bg, bold, false);
 
     // Plugin status segments.

@@ -130,10 +130,93 @@ impl WasmPlugin {
 
     /// Write `s` into guest memory, returning `(ptr, len)`. Caller must dealloc.
     fn write_str(&self, store: &mut Store<HostState>, s: &str) -> Option<(i32, i32)> {
-        let len = s.len() as i32;
-        let ptr = self.alloc.call(&mut *store, len).ok()?;
-        self.memory.write(&mut *store, ptr as usize, s.as_bytes()).ok()?;
-        Some((ptr, len))
+        write_str(store, &self.memory, &self.alloc, s)
+    }
+}
+
+/// Write `s` into a guest's memory via its `alloc`, returning `(ptr, len)`.
+fn write_str(store: &mut Store<HostState>, memory: &Memory, alloc: &TypedFunc<i32, i32>, s: &str) -> Option<(i32, i32)> {
+    let len = s.len() as i32;
+    let ptr = alloc.call(&mut *store, len).ok()?;
+    memory.write(&mut *store, ptr as usize, s.as_bytes()).ok()?;
+    Some((ptr, len))
+}
+
+/// Instantiate a module and resolve the shared ABI exports (memory, alloc,
+/// dealloc), with the optional `doe_log` host import wired up.
+fn instantiate(wasm: &[u8]) -> Result<(Store<HostState>, Instance, Memory, TypedFunc<i32, i32>, FuncStrUnit), String> {
+    let engine = Engine::default();
+    let module = Module::new(&engine, wasm).map_err(|e| format!("parse: {e}"))?;
+    let mut store = Store::new(&engine, HostState::default());
+    let mut linker = Linker::<HostState>::new(&engine);
+    linker
+        .func_wrap("env", "doe_log", |mut caller: Caller<'_, HostState>, ptr: i32, len: i32| {
+            if let Some(s) = read_caller_str(&mut caller, ptr, len) {
+                caller.data_mut().logs.push(s);
+            }
+        })
+        .map_err(|e| format!("linker: {e}"))?;
+    let instance = linker
+        .instantiate_and_start(&mut store, &module)
+        .map_err(|e| format!("instantiate: {e}"))?;
+    let memory = instance.get_memory(&store, "memory").ok_or("missing `memory` export")?;
+    let alloc = instance
+        .get_typed_func::<i32, i32>(&store, "alloc")
+        .map_err(|_| "missing `alloc` export".to_string())?;
+    let dealloc = instance
+        .get_typed_func::<(i32, i32), ()>(&store, "dealloc")
+        .map_err(|_| "missing `dealloc` export".to_string())?;
+    Ok((store, instance, memory, alloc, dealloc))
+}
+
+/// A WASM module that registers as a code evaluator for dynamic documents. It
+/// must export `doe_eval(lang_ptr, lang_len, src_ptr, src_len) -> i64` and
+/// `doe_eval_languages() -> i64` (a JSON array of language names), plus the
+/// shared alloc/dealloc/memory ABI.
+pub struct WasmEvaluator {
+    languages: Vec<String>,
+    store: Store<HostState>,
+    memory: Memory,
+    alloc: TypedFunc<i32, i32>,
+    dealloc: FuncStrUnit,
+    f_eval: TypedFunc<(i32, i32, i32, i32), i64>,
+    _instance: Instance,
+}
+
+impl WasmEvaluator {
+    /// Load a module as an evaluator, or `None` if it isn't one (no `doe_eval`).
+    pub fn load(wasm: &[u8]) -> Option<WasmEvaluator> {
+        let (mut store, instance, memory, alloc, dealloc) = instantiate(wasm).ok()?;
+        let f_eval = instance.get_typed_func::<(i32, i32, i32, i32), i64>(&store, "doe_eval").ok()?;
+        let languages = instance
+            .get_typed_func::<(), i64>(&store, "doe_eval_languages")
+            .ok()
+            .and_then(|f| f.call(&mut store, ()).ok())
+            .map(|packed| read_packed(&memory, &mut store, &dealloc, packed))
+            .and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok())
+            .unwrap_or_default();
+        Some(WasmEvaluator { languages, store, memory, alloc, dealloc, f_eval, _instance: instance })
+    }
+}
+
+impl crate::eval::Evaluator for WasmEvaluator {
+    fn handles(&self, lang: &str) -> bool {
+        self.languages.iter().any(|l| l == lang)
+    }
+
+    fn eval(&mut self, req: &crate::eval::EvalRequest) -> crate::eval::EvalResult {
+        let out = (|| {
+            let (lp, ll) = write_str(&mut self.store, &self.memory, &self.alloc, req.lang)?;
+            let (sp, sl) = write_str(&mut self.store, &self.memory, &self.alloc, req.source)?;
+            let packed = self.f_eval.call(&mut self.store, (lp, ll, sp, sl)).ok();
+            let _ = self.dealloc.call(&mut self.store, (lp, ll));
+            let _ = self.dealloc.call(&mut self.store, (sp, sl));
+            Some(read_packed(&self.memory, &mut self.store, &self.dealloc, packed?))
+        })();
+        match out {
+            Some(output) => crate::eval::EvalResult { output, error: None },
+            None => crate::eval::EvalResult { output: String::new(), error: Some("wasm eval failed".into()) },
+        }
     }
 }
 
@@ -278,5 +361,44 @@ mod tests {
     fn missing_required_export_is_an_error() {
         let wasm = wat::parse_str("(module (memory (export \"memory\") 1))").unwrap();
         assert!(WasmPlugin::load("bad.wasm", &wasm).is_err());
+    }
+
+    // An ABI-conformant evaluator: declares language "py", returns a fixed
+    // string from doe_eval.
+    const EVAL_WAT: &str = r#"
+        (module
+          (memory (export "memory") 1)
+          (global $heap (mut i32) (i32.const 1024))
+          (data (i32.const 16) "[\22py\22]")
+          (data (i32.const 32) "evaluated")
+          (func (export "alloc") (param i32) (result i32)
+            (local $p i32)
+            (local.set $p (global.get $heap))
+            (global.set $heap (i32.add (global.get $heap) (local.get 0)))
+            (local.get $p))
+          (func (export "dealloc") (param i32 i32))
+          (func (export "doe_eval_languages") (result i64)
+            (i64.or (i64.shl (i64.const 16) (i64.const 32)) (i64.const 6)))
+          (func (export "doe_eval") (param i32 i32 i32 i32) (result i64)
+            (i64.or (i64.shl (i64.const 32) (i64.const 32)) (i64.const 9))))
+    "#;
+
+    #[test]
+    fn wasm_evaluator_handles_and_evals() {
+        use crate::eval::Evaluator;
+        let wasm = wat::parse_str(EVAL_WAT).unwrap();
+        let mut ev = WasmEvaluator::load(&wasm).expect("is an evaluator");
+        assert!(ev.handles("py"));
+        assert!(!ev.handles("lua"));
+        let r = ev.eval(&crate::eval::EvalRequest { lang: "py", source: "x = 1", doc_path: None });
+        assert_eq!(r.output, "evaluated");
+        assert!(r.error.is_none());
+    }
+
+    #[test]
+    fn non_evaluator_module_is_none() {
+        // The plugin fixture has no doe_eval, so it isn't an evaluator.
+        let wasm = wat::parse_str(WAT).unwrap();
+        assert!(WasmEvaluator::load(&wasm).is_none());
     }
 }
