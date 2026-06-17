@@ -39,6 +39,10 @@ doe a.md b.rs c.toml   # open several files as buffers
   the fallback to stay cheap.
 - **Multi-cursor** — add cursor on next match (`Ctrl+D`), above/below
   (`Alt+↑/↓`), select all matches (`Ctrl+L`), edit at every cursor at once.
+- **Structural editing** (tree-sitter) — **expand/shrink selection** to the
+  enclosing syntax node (`Alt+Shift+↑/↓`) and **Go to Symbol** (`Ctrl+Shift+O`,
+  fuzzy outline of definitions, or headings in Markdown). The buffer is parsed
+  once per edit and cached, so this and highlighting share one parse.
 - **Editing** — undo/redo, auto-indent, toggle line comment (`Ctrl+/`),
   bold/italic wrap (`Ctrl+B` / `Ctrl+I`), matching-bracket highlight, smart
   home, word motions.

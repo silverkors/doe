@@ -91,6 +91,7 @@ pub fn parse(input: &str) -> Option<Command> {
         "run_document" | "run_all" => Command::RunDocument,
         "expand_selection" => Command::ExpandSelection,
         "shrink_selection" => Command::ShrinkSelection,
+        "go_to_symbol" | "symbols" | "outline" => Command::GoToSymbol,
 
         _ => return None,
     };

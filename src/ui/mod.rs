@@ -10,6 +10,7 @@ pub mod renderer;
 pub mod screen;
 pub mod settings;
 pub mod statusbar;
+pub mod symbols;
 pub mod wrap;
 
 pub use screen::Screen;

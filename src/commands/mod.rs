@@ -93,6 +93,7 @@ pub enum Command {
     // Structural editing (tree-sitter)
     ExpandSelection,
     ShrinkSelection,
+    GoToSymbol,
 
     // Dynamic documents
     RunCodeBlock,

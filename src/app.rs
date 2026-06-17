@@ -48,6 +48,7 @@ pub struct App {
     pub modal_tab: ModalTab,
     pub settings_panel: SettingsPanel,
     pub callout_panel: CalloutPanel,
+    pub symbol_panel: crate::ui::symbols::SymbolPanel,
     pub search: SearchState,
     pub status_message: String,
     pub plugins: PluginRegistry,
@@ -169,6 +170,7 @@ impl App {
             modal_tab: ModalTab::Commands,
             settings_panel: SettingsPanel::default(),
             callout_panel: CalloutPanel::default(),
+            symbol_panel: crate::ui::symbols::SymbolPanel::default(),
             search: SearchState::default(),
             status_message: String::new(),
             plugins: PluginRegistry::with_builtins(),
@@ -442,6 +444,10 @@ impl App {
         }
         if self.callout_panel.open {
             self.handle_callout_key(ev);
+            return;
+        }
+        if self.symbol_panel.open {
+            self.handle_symbol_key(ev);
             return;
         }
         if self.modal_open {
@@ -1186,6 +1192,7 @@ impl App {
             Command::RunDocument => self.run_code(RunScope::Document),
             Command::ExpandSelection => self.expand_selection(),
             Command::ShrinkSelection => self.shrink_selection(),
+            Command::GoToSymbol => self.open_symbol_outline(),
 
             // View
             Command::ToggleSoftWrap => {
@@ -1386,6 +1393,49 @@ impl App {
         }
     }
 
+    /// Open the "Go to Symbol" outline for the active buffer.
+    fn open_symbol_outline(&mut self) {
+        let syms = self.collect_symbols();
+        if syms.is_empty() {
+            self.set_status("no symbols in this file");
+            return;
+        }
+        self.symbol_panel.open(syms);
+    }
+
+    /// Definitions for tree-sitter buffers, headings for Markdown.
+    fn collect_symbols(&self) -> Vec<crate::syntax::structure::Symbol> {
+        let buf = self.active_buffer();
+        if buf.language == crate::syntax::Language::Markdown {
+            markdown_headings(buf)
+        } else {
+            self.syntax
+                .with_tree(buf, |doc| crate::syntax::structure::symbols(&doc))
+                .unwrap_or_default()
+        }
+    }
+
+    fn handle_symbol_key(&mut self, ev: KeyEvent) {
+        use crossterm::event::KeyCode::*;
+        match ev.code {
+            Esc => self.symbol_panel.close(),
+            Enter => {
+                let line = self.symbol_panel.selected_line();
+                self.symbol_panel.close();
+                if let Some(line) = line {
+                    let pos = self.active_buffer().rope.line_to_char(line);
+                    self.active_buffer_mut().set_single_cursor(pos, false);
+                    self.ensure_cursor_visible();
+                }
+            }
+            Up | BackTab => self.symbol_panel.move_selection(-1),
+            Down | Tab => self.symbol_panel.move_selection(1),
+            Backspace => self.symbol_panel.pop_char(),
+            Char(c) if !ev.modifiers.contains(KeyModifiers::CONTROL) => self.symbol_panel.push_char(c),
+            _ => {}
+        }
+    }
+
     // --- dynamic documents -------------------------------------------------
 
     /// The folder of the active document (its parent, or cwd for an untitled
@@ -1579,6 +1629,31 @@ fn backup_for_path(recovery: &Recovery, session: &Option<Session>, path: &Path) 
         }
     }
     None
+}
+
+/// Collect ATX headings (`#`…`######`) from a Markdown buffer as outline symbols.
+fn markdown_headings(buf: &Buffer) -> Vec<crate::syntax::structure::Symbol> {
+    use crate::syntax::structure::Symbol;
+    let mut out = Vec::new();
+    for line in 0..buf.len_lines() {
+        let start = buf.rope.line_to_char(line);
+        let len = buf.line_len_chars(line);
+        let text = buf.rope.slice(start..start + len).to_string();
+        let trimmed = text.trim_start();
+        let level = trimmed.chars().take_while(|&c| c == '#').count();
+        if (1..=6).contains(&level) && trimmed[level..].starts_with(' ') {
+            let kind = match level {
+                1 => "h1",
+                2 => "h2",
+                3 => "h3",
+                4 => "h4",
+                5 => "h5",
+                _ => "h6",
+            };
+            out.push(Symbol { name: trimmed[level..].trim().to_string(), kind, line });
+        }
+    }
+    out
 }
 
 #[cfg(test)]

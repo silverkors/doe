@@ -238,6 +238,7 @@ fn default_keybindings() -> Keybindings {
         ("alt-down", "add_cursor_below"),
         ("alt-shift-up", "expand_selection"),
         ("alt-shift-down", "shrink_selection"),
+        ("ctrl-shift-o", "go_to_symbol"),
         ("left", "move_left"),
         ("right", "move_right"),
         ("up", "move_up"),
