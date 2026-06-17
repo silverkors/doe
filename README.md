@@ -241,13 +241,16 @@ Written without `unsafe` Rust.
 - **0.2 (released):** modeless editing + command palette ✓, bracket matching ✓,
   soft wrap ✓, fuzzy file picker (with fs navigation) ✓, crash
   recovery/autosave ✓, unified tabbed modal ✓, Markdown callout live preview ✓.
-- **0.3 (in progress):** tree-sitter highlighting (Rust/Python/JS/TS/HTML/CSS/
+- **0.3 (released):** tree-sitter highlighting (Rust/Python/JS/TS/HTML/CSS/
   JSON ✓), configurable callouts + Obsidian import ✓, context-aware palette
-  ranking ✓, WASM sandboxed plugins ✓, and **dynamic documents** ✓ —
-  runnable embedded code, sandboxed Lua built in
+  ranking ✓, WASM sandboxed plugins ✓, and **dynamic documents** ✓ — runnable
+  embedded code with a sandboxed Lua evaluator and live-previewed output
   ([design](docs/dynamic-documents.md)).
+- **Later:** more tree-sitter grammars, Python/JS document evaluators (via the
+  evaluator table or WASM), richer plugin host capabilities.
 
 > [!warning]
-> Dynamic documents are a **design sketch only** — executing document code is
-> arbitrary code execution, so it stays off by default and behind per-folder
-> trust and a default-deny sandbox. See the linked design before relying on it.
+> Dynamic documents run **arbitrary code**. They are off until you trust a
+> folder, the Lua sandbox is default-deny (no fs/net/process, with a timeout and
+> output cap), and `auto` blocks never run in untrusted documents. Read the
+> [design](docs/dynamic-documents.md) before enabling untrusted content.
