@@ -146,6 +146,66 @@ trim_trailing_whitespace_on_save = false
 "alt-up" = "add_cursor_above"
 ```
 
+## Examples
+
+### A dynamic document
+
+Open this in DOE, put the cursor in the block and press `Alt+Enter` (the first
+run in a folder asks you to trust it). DOE runs the Lua and owns the
+`doe:output` region — rerunning replaces it, and with the cursor elsewhere it
+shows as a dim "computed" card:
+
+````markdown
+> [!tip] Live values
+> Edit the loop, rerun, and the table below updates.
+
+```lua run id=primes
+local function is_prime(n)
+  for i = 2, math.floor(n ^ 0.5) do
+    if n % i == 0 then return false end
+  end
+  return n > 1
+end
+local out = {}
+for n = 2, 20 do
+  if is_prime(n) then out[#out + 1] = n end
+end
+return table.concat(out, ", ")
+```
+<!-- doe:output id=primes -->
+2, 3, 5, 7, 11, 13, 17, 19
+<!-- /doe:output -->
+````
+
+The Lua runs sandboxed — no `os`/`io`/filesystem/network, with a timeout and an
+output cap. `print(...)` is captured too, so `print("hi")` and `return value`
+both end up in the output region.
+
+### Styling callouts
+
+`~/.config/doe/callouts.toml` — override a built-in type or add your own (or
+edit it live in the "Callout Styles…" panel, or import from Obsidian):
+
+```toml
+[note]            # override a built-in
+color = "#448aff"
+icon  = "●"
+
+[psalm]           # a custom type — [!psalm] in your Markdown
+color = "#a882ff"
+icon  = "♪"
+
+[blessing]
+color = "#fb464c"
+icon  = "☞"
+```
+
+### A status-bar plugin
+
+Drop a `.wasm` in `~/.config/doe/plugins/` to add a status segment or commands;
+the full ABI (and a minimal example) is in
+[docs/wasm-plugins.md](docs/wasm-plugins.md).
+
 ## Architecture
 
 ```
