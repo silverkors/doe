@@ -28,6 +28,36 @@ impl PluginRegistry {
         self.plugins.push(plugin);
     }
 
+    /// Load every `*.wasm` in `dir` as a sandboxed plugin. Missing dir is fine;
+    /// a module that fails to load is skipped (its error returned for logging)
+    /// rather than aborting the others. Returns `(loaded, errors)`.
+    pub fn load_wasm_dir(&mut self, dir: &std::path::Path) -> (usize, Vec<String>) {
+        let mut loaded = 0;
+        let mut errors = Vec::new();
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return (0, errors),
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("wasm") {
+                continue;
+            }
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("plugin").to_string();
+            match std::fs::read(&path) {
+                Ok(bytes) => match super::wasm::WasmPlugin::load(&file_name, &bytes) {
+                    Ok(p) => {
+                        self.register(Box::new(p));
+                        loaded += 1;
+                    }
+                    Err(e) => errors.push(format!("{file_name}: {e}")),
+                },
+                Err(e) => errors.push(format!("{file_name}: {e}")),
+            }
+        }
+        (loaded, errors)
+    }
+
     pub fn dispatch(&mut self, event: &Event) {
         for p in &mut self.plugins {
             p.on_event(event);

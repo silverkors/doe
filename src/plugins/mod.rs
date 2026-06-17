@@ -5,6 +5,7 @@
 pub mod api;
 pub mod builtins;
 pub mod registry;
+pub mod wasm;
 
 pub use api::{Event, PluginView};
 pub use registry::PluginRegistry;

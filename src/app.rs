@@ -161,6 +161,15 @@ impl App {
             disk_warned: false,
             last_drag_row: 0,
         };
+        // Load sandboxed WASM plugins from <config>/plugins/*.wasm.
+        let plugins_dir = app.config.config_dir.join("plugins");
+        let (loaded, errors) = app.plugins.load_wasm_dir(&plugins_dir);
+        if let Some(err) = errors.first() {
+            app.set_status(format!("plugin error — {err}"));
+        } else if loaded > 0 {
+            app.set_status(format!("loaded {loaded} plugin(s)"));
+        }
+
         let opened: Vec<PathBuf> = app.buffers.iter().filter_map(|b| b.path.clone()).collect();
         for p in &opened {
             app.plugins.dispatch(&Event::OpenFile(p.clone()));

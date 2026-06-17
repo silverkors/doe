@@ -26,8 +26,12 @@ tree-sitter-json = "0.24.8"
 tree-sitter-css = "0.25.0"
 tree-sitter-html = "0.23.2"
 serde_json = "1"
+wasmi = "1.1.0"
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
+
+[dev-dependencies]
+wat = "1.252.0"

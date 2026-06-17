@@ -62,7 +62,9 @@ doe a.md b.rs c.toml   # open several files as buffers
 - **Configurable** keybindings, settings and themes — no recompile needed.
 - **Incremental rendering** — a diffing cell grid redraws only changed cells.
 - **Plugin system** — internal API (events, buffer view, status segments,
-  command aliases) designed to back sandboxed WASM plugins later.
+  command aliases) plus a **sandboxed WASM host** (wasmi, no WASI/fs/network):
+  drop `*.wasm` in `~/.config/doe/plugins/` and they load on startup. See the
+  [plugin ABI](docs/wasm-plugins.md).
 
 ## The modal (Spotlight-style, tabbed)
 
@@ -175,7 +177,7 @@ Written without `unsafe` Rust.
   recovery/autosave ✓, unified tabbed modal ✓, Markdown callout live preview ✓.
 - **0.3 (in progress):** tree-sitter highlighting (Rust/Python/JS/TS/HTML/CSS/
   JSON ✓), configurable callouts + Obsidian import ✓, context-aware palette
-  ranking, WASM sandboxed plugins, and **dynamic documents** —
+  ranking ✓, WASM sandboxed plugins ✓, and **dynamic documents** —
   runnable embedded code (Lua/Python/WASM) via sandboxed plugins
   ([design sketch](docs/dynamic-documents.md)).
 
