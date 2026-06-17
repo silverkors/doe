@@ -217,6 +217,7 @@ fn default_keybindings() -> Keybindings {
         ("ctrl-9", "goto_buffer 9"),
         ("ctrl-s", "save"),
         ("ctrl-w", "close_buffer"),
+        ("alt-enter", "run_code_block"),
         ("ctrl-q", "quit"),
         ("ctrl-z", "undo"),
         ("ctrl-y", "redo"),

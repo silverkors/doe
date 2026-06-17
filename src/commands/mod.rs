@@ -90,6 +90,10 @@ pub enum Command {
     CalloutSettings,
     ImportObsidianCallouts,
 
+    // Dynamic documents
+    RunCodeBlock,
+    RunDocument,
+
     // Misc
     #[allow(dead_code)]
     NoOp,

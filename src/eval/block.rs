@@ -200,6 +200,33 @@ pub fn render_output_region(id: &Option<String>, output: &str) -> String {
     }
 }
 
+/// Compute the `(start, end, text)` rope edit that writes `region_text` for a
+/// block: replacing an existing output region, or inserting one right after the
+/// closing fence (adding a leading newline if the fence sits at EOF).
+pub fn output_edit(rope: &ropey::Rope, blk: &ParsedBlock, region_text: &str) -> (usize, usize, String) {
+    let line_start = |line: usize| -> usize {
+        if line >= rope.len_lines() {
+            rope.len_chars()
+        } else {
+            rope.line_to_char(line)
+        }
+    };
+    match blk.output_region {
+        Some((s, e)) => (line_start(s), line_start(e), format!("{region_text}\n")),
+        None => {
+            let at = line_start(blk.fence_close_line + 1);
+            let needs_leading_nl =
+                at == rope.len_chars() && rope.len_chars() > 0 && rope.char(rope.len_chars() - 1) != '\n';
+            let text = if needs_leading_nl {
+                format!("\n{region_text}\n")
+            } else {
+                format!("{region_text}\n")
+            };
+            (at, at, text)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,6 +275,46 @@ mod tests {
         let doc = "x\n```lua run\nreturn 1\n```\n";
         assert!(block_at_line(&lines(doc), 2).is_some()); // on the source line
         assert!(block_at_line(&lines(doc), 0).is_none());
+    }
+
+    fn run_and_splice(doc: &str, region_text: &str) -> String {
+        // Parse the first block and apply output_edit to a rope, simulating a run.
+        let mut rope = ropey::Rope::from_str(doc);
+        let ls: Vec<&str> = doc.lines().collect();
+        let blk = &parse_blocks(&ls)[0];
+        let (s, e, text) = output_edit(&rope, blk, region_text);
+        rope.remove(s..e);
+        rope.insert(s, &text);
+        rope.to_string()
+    }
+
+    #[test]
+    fn output_edit_inserts_after_fence() {
+        let out = run_and_splice("```lua run\nreturn 1\n```\nafter\n", "<!-- doe:output -->\n1\n<!-- /doe:output -->");
+        assert_eq!(
+            out,
+            "```lua run\nreturn 1\n```\n<!-- doe:output -->\n1\n<!-- /doe:output -->\nafter\n"
+        );
+    }
+
+    #[test]
+    fn output_edit_inserts_at_eof_without_newline() {
+        // Closing fence is the last line with no trailing newline.
+        let out = run_and_splice("```lua run\nreturn 1\n```", "<!-- doe:output -->\n1\n<!-- /doe:output -->");
+        assert_eq!(
+            out,
+            "```lua run\nreturn 1\n```\n<!-- doe:output -->\n1\n<!-- /doe:output -->\n"
+        );
+    }
+
+    #[test]
+    fn output_edit_replaces_existing_region() {
+        let doc = "```lua run\nreturn 2\n```\n<!-- doe:output -->\nstale\n<!-- /doe:output -->\ntail\n";
+        let out = run_and_splice(doc, "<!-- doe:output -->\n2\n<!-- /doe:output -->");
+        assert_eq!(
+            out,
+            "```lua run\nreturn 2\n```\n<!-- doe:output -->\n2\n<!-- /doe:output -->\ntail\n"
+        );
     }
 
     #[test]

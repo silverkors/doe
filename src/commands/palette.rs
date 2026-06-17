@@ -39,6 +39,8 @@ pub fn catalog() -> &'static [PaletteAction] {
         PaletteAction { command: "settings", title: "Settings…", hint: "Ctrl+," },
         PaletteAction { command: "callout_settings", title: "Callout Styles…", hint: "" },
         PaletteAction { command: "import_callouts", title: "Import Callouts from Obsidian…", hint: "" },
+        PaletteAction { command: "run_code_block", title: "Run Code Block", hint: "Alt+Enter" },
+        PaletteAction { command: "run_document", title: "Run Document (all blocks)", hint: "" },
         PaletteAction { command: "toggle_bold", title: "Markdown: Bold", hint: "Ctrl+B" },
         PaletteAction { command: "toggle_italic", title: "Markdown: Italic", hint: "Ctrl+I" },
         PaletteAction { command: "select_all", title: "Select All", hint: "Ctrl+A" },

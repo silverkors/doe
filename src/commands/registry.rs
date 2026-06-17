@@ -87,6 +87,8 @@ pub fn parse(input: &str) -> Option<Command> {
         "settings" | "preferences" => Command::Settings,
         "callout_settings" | "callouts" => Command::CalloutSettings,
         "import_callouts" | "import_obsidian_callouts" => Command::ImportObsidianCallouts,
+        "run_code_block" | "run_block" => Command::RunCodeBlock,
+        "run_document" | "run_all" => Command::RunDocument,
 
         _ => return None,
     };

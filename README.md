@@ -65,6 +65,11 @@ doe a.md b.rs c.toml   # open several files as buffers
   command aliases) plus a **sandboxed WASM host** (wasmi, no WASI/fs/network):
   drop `*.wasm` in `~/.config/doe/plugins/` and they load on startup. See the
   [plugin ABI](docs/wasm-plugins.md).
+- **Dynamic documents** — fenced code blocks marked `run` execute and their
+  output is spliced into a `<!-- doe:output -->` region (`Alt+Enter` / palette
+  "Run Code Block"). A **sandboxed Lua** evaluator is built in (no fs/net, with
+  a timeout and output cap); running is gated by **per-folder trust** (Once /
+  Always / Never). See the [design](docs/dynamic-documents.md).
 
 ## The modal (Spotlight-style, tabbed)
 
@@ -177,9 +182,9 @@ Written without `unsafe` Rust.
   recovery/autosave ✓, unified tabbed modal ✓, Markdown callout live preview ✓.
 - **0.3 (in progress):** tree-sitter highlighting (Rust/Python/JS/TS/HTML/CSS/
   JSON ✓), configurable callouts + Obsidian import ✓, context-aware palette
-  ranking ✓, WASM sandboxed plugins ✓, and **dynamic documents** —
-  runnable embedded code (Lua/Python/WASM) via sandboxed plugins
-  ([design sketch](docs/dynamic-documents.md)).
+  ranking ✓, WASM sandboxed plugins ✓, and **dynamic documents** ✓ —
+  runnable embedded code, sandboxed Lua built in
+  ([design](docs/dynamic-documents.md)).
 
 > [!warning]
 > Dynamic documents are a **design sketch only** — executing document code is

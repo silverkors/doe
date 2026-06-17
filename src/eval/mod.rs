@@ -6,10 +6,13 @@
 
 pub mod block;
 pub mod lua;
+pub mod trust;
 
 use std::path::Path;
 
-/// A request to evaluate one code block.
+/// A request to evaluate one code block. `lang`/`doc_path` are part of the
+/// evaluator contract; the built-in Lua backend ignores them.
+#[allow(dead_code)]
 pub struct EvalRequest<'a> {
     pub lang: &'a str,
     pub source: &'a str,

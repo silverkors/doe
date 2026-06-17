@@ -17,6 +17,8 @@ pub enum PromptKind {
     /// Closing a modified buffer: Save / Discard / Cancel. Not a text prompt —
     /// the command-line key handler intercepts s/d/c instead of inserting.
     ConfirmClose,
+    /// Running document code in an untrusted folder: Once / Always / Never.
+    ConfirmTrust,
 }
 
 impl PromptKind {
@@ -27,12 +29,13 @@ impl PromptKind {
             PromptKind::SaveAs => "save as: ",
             PromptKind::ImportCallouts => "import callouts from (vault or data.json): ",
             PromptKind::ConfirmClose => "unsaved changes — [s]ave  [d]iscard  [c]ancel",
+            PromptKind::ConfirmTrust => "run code in this folder? [o]nce  [a]lways  [n]ever",
         }
     }
 
     /// A confirm prompt captures single keys instead of collecting text.
     pub fn is_confirm(&self) -> bool {
-        matches!(self, PromptKind::ConfirmClose)
+        matches!(self, PromptKind::ConfirmClose | PromptKind::ConfirmTrust)
     }
 }
 

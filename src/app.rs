@@ -23,6 +23,15 @@ use crate::ui::wrap;
 use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind, KeyModifiers};
 use std::path::{Path, PathBuf};
 
+/// What a dynamic-document run covers.
+#[derive(Debug, Clone, Copy)]
+enum RunScope {
+    /// The runnable block under the cursor.
+    Block,
+    /// Every runnable block in the document.
+    Document,
+}
+
 pub struct App {
     pub config: Config,
     pub buffers: Vec<Buffer>,
@@ -42,6 +51,12 @@ pub struct App {
     pub search: SearchState,
     pub status_message: String,
     pub plugins: PluginRegistry,
+    /// Dynamic-document code evaluators, keyed by language at lookup time.
+    evaluators: Vec<Box<dyn crate::eval::Evaluator>>,
+    /// Per-folder trust for running document code.
+    trust: crate::eval::trust::TrustStore,
+    /// A run awaiting a trust decision (set while the trust prompt is up).
+    pending_run: Option<RunScope>,
     pub width: u16,
     pub height: u16,
     pub should_quit: bool,
@@ -134,6 +149,7 @@ impl App {
 
         let palette = Palette::new(&config.config_dir);
         let file_picker = FilePicker::new(&config.config_dir);
+        let trust = crate::eval::trust::TrustStore::load(&config.config_dir);
         let mut app = App {
             config,
             buffers,
@@ -152,6 +168,9 @@ impl App {
             search: SearchState::default(),
             status_message: String::new(),
             plugins: PluginRegistry::with_builtins(),
+            evaluators: vec![Box::new(crate::eval::lua::LuaEvaluator::default())],
+            trust,
+            pending_run: None,
             width: 80,
             height: 24,
             should_quit: false,
@@ -888,7 +907,7 @@ impl App {
                 }
             }
             // Confirm prompts are handled by handle_confirm_key, not here.
-            Some(PromptKind::ConfirmClose) | None => {}
+            Some(PromptKind::ConfirmClose) | Some(PromptKind::ConfirmTrust) | None => {}
         }
     }
 
@@ -1152,6 +1171,8 @@ impl App {
             Command::Settings => self.settings_panel.open(),
             Command::CalloutSettings => self.callout_panel.open(),
             Command::ImportObsidianCallouts => self.import_obsidian_callouts(),
+            Command::RunCodeBlock => self.run_code(RunScope::Block),
+            Command::RunDocument => self.run_code(RunScope::Document),
 
             // View
             Command::ToggleSoftWrap => {
@@ -1298,8 +1319,119 @@ impl App {
                 self.command.close();
                 self.set_status("close cancelled");
             }
+            (Some(PromptKind::ConfirmTrust), Char('o' | 'O')) => {
+                self.command.close();
+                if let Some(dir) = self.active_doc_dir() {
+                    self.trust.trust_session(dir);
+                }
+                self.run_pending();
+            }
+            (Some(PromptKind::ConfirmTrust), Char('a' | 'A')) => {
+                self.command.close();
+                if let Some(dir) = self.active_doc_dir() {
+                    self.trust.trust(dir);
+                }
+                self.run_pending();
+            }
+            (Some(PromptKind::ConfirmTrust), Char('n' | 'N') | Esc) => {
+                self.command.close();
+                self.pending_run = None;
+                self.set_status("did not run (folder not trusted)");
+            }
             _ => {}
         }
+    }
+
+    // --- dynamic documents -------------------------------------------------
+
+    /// The folder of the active document (its parent, or cwd for an untitled
+    /// buffer) — the trust granularity for running code.
+    fn active_doc_dir(&self) -> Option<PathBuf> {
+        match self.active_buffer().path.as_ref() {
+            Some(p) => p.parent().map(|p| p.to_path_buf()),
+            None => std::env::current_dir().ok(),
+        }
+    }
+
+    /// Run document code at `scope`, gating on per-folder trust.
+    fn run_code(&mut self, scope: RunScope) {
+        if self.active_buffer().language != crate::syntax::Language::Markdown {
+            self.set_status("run: only Markdown documents");
+            return;
+        }
+        let trusted = self.active_doc_dir().is_some_and(|d| self.trust.is_trusted(&d));
+        if trusted {
+            self.do_run(scope);
+        } else {
+            self.pending_run = Some(scope);
+            self.open_prompt(PromptKind::ConfirmTrust, "");
+        }
+    }
+
+    fn run_pending(&mut self) {
+        if let Some(scope) = self.pending_run.take() {
+            self.do_run(scope);
+        }
+    }
+
+    /// Evaluate one block's source with the evaluator registered for `lang`.
+    fn eval_block(&mut self, lang: &str, source: &str, doc_path: Option<&Path>) -> Option<crate::eval::EvalResult> {
+        let ev = self.evaluators.iter_mut().find(|e| e.languages().contains(&lang))?;
+        Some(ev.eval(&crate::eval::EvalRequest { lang, source, doc_path }))
+    }
+
+    /// Run the requested blocks and splice their output regions in one undo step.
+    fn do_run(&mut self, scope: RunScope) {
+        use crate::eval::block::{self, OutMode};
+        let text = self.active_buffer().rope.to_string();
+        let lines: Vec<&str> = text.lines().collect();
+        let cursor_line = {
+            let b = self.active_buffer();
+            b.pos_to_line_col(b.primary_cursor().head).0
+        };
+        let blocks: Vec<block::ParsedBlock> = match scope {
+            RunScope::Block => block::block_at_line(&lines, cursor_line).into_iter().collect(),
+            RunScope::Document => block::parse_blocks(&lines),
+        };
+        if blocks.is_empty() {
+            self.set_status("no runnable code block here");
+            return;
+        }
+
+        let doc_path = self.active_buffer().path.clone();
+        let mut edits: Vec<(usize, usize, String)> = Vec::new();
+        let (mut ran, mut errors) = (0u32, 0u32);
+        for blk in &blocks {
+            let Some(result) = self.eval_block(&blk.directives.lang, &blk.source, doc_path.as_deref()) else {
+                self.set_status(format!("no evaluator for '{}'", blk.directives.lang));
+                continue;
+            };
+            ran += 1;
+            if result.error.is_some() {
+                errors += 1;
+            }
+            if matches!(blk.directives.out, OutMode::Hidden) {
+                continue; // ran for side effects; write nothing
+            }
+            let body = match (&result.error, result.output.is_empty()) {
+                (Some(e), true) => format!("error: {e}"),
+                (Some(e), false) => format!("{}\nerror: {e}", result.output),
+                (None, _) => result.output,
+            };
+            let region_text = block::render_output_region(&blk.directives.id, &body);
+            edits.push(block::output_edit(&self.active_buffer().rope, blk, &region_text));
+        }
+
+        if !edits.is_empty() {
+            self.active_buffer_mut().splice_segments(&edits);
+            self.ensure_cursor_visible();
+            self.plugins.dispatch(&Event::BufferChange);
+        }
+        self.set_status(match (ran, errors) {
+            (0, _) => "nothing ran".to_string(),
+            (n, 0) => format!("ran {n} block(s)"),
+            (n, e) => format!("ran {n} block(s), {e} with error(s)"),
+        });
     }
 
     fn close_buffer(&mut self) {
@@ -1403,4 +1535,60 @@ fn backup_for_path(recovery: &Recovery, session: &Option<Session>, path: &Path) 
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    /// Build an App with a single Markdown buffer holding `text`, using an
+    /// isolated temp config dir.
+    fn markdown_app(text: &str) -> App {
+        std::env::set_var("DOE_CONFIG_DIR", std::env::temp_dir().join("doe-dyn-test"));
+        let mut app = App::new(Config::load(), vec![]);
+        let b = app.active_buffer_mut();
+        b.set_text(text);
+        b.language = crate::syntax::Language::Markdown;
+        app
+    }
+
+    #[test]
+    fn run_code_block_splices_output() {
+        let mut app = markdown_app("```lua run\nreturn 2 + 40\n```\n");
+        // Trust the (untitled → cwd) folder so the run isn't gated on a prompt.
+        let dir = app.active_doc_dir().unwrap();
+        app.trust.trust_session(dir);
+        // Cursor onto the source line, then run.
+        let pos = app.active_buffer().rope.line_to_char(1);
+        app.active_buffer_mut().set_single_cursor(pos, false);
+        app.run_code(RunScope::Block);
+        let out = app.active_buffer().rope.to_string();
+        assert!(
+            out.contains("<!-- doe:output -->\n42\n<!-- /doe:output -->"),
+            "expected spliced output, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn untrusted_run_prompts_and_does_not_execute() {
+        let mut app = markdown_app("```lua run\nreturn 1\n```\n");
+        // No trust granted: running should open the trust prompt and write nothing.
+        app.run_code(RunScope::Block);
+        assert_eq!(app.command.kind, Some(PromptKind::ConfirmTrust));
+        assert!(!app.active_buffer().rope.to_string().contains("doe:output"));
+    }
+
+    #[test]
+    fn rerun_replaces_existing_output() {
+        let mut app = markdown_app("```lua run\nreturn 1\n```\n<!-- doe:output -->\nstale\n<!-- /doe:output -->\n");
+        let dir = app.active_doc_dir().unwrap();
+        app.trust.trust_session(dir);
+        let pos = app.active_buffer().rope.line_to_char(1);
+        app.active_buffer_mut().set_single_cursor(pos, false);
+        app.run_code(RunScope::Block);
+        let out = app.active_buffer().rope.to_string();
+        assert!(out.contains("doe:output -->\n1\n"), "got:\n{out}");
+        assert!(!out.contains("stale"), "stale output should be replaced:\n{out}");
+    }
 }

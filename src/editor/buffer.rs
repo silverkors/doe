@@ -924,6 +924,27 @@ impl Buffer {
         self.mark_modified();
     }
 
+    /// Apply several `(start, end, text)` replacements as one undoable step.
+    /// Edits must be non-overlapping; applied right-to-left so earlier offsets
+    /// stay valid. Used to splice dynamic-document output regions.
+    pub fn splice_segments(&mut self, edits: &[(usize, usize, String)]) {
+        if edits.is_empty() {
+            return;
+        }
+        self.record(false);
+        let mut sorted = edits.to_vec();
+        sorted.sort_by_key(|e| e.0);
+        for (s, e, text) in sorted.iter().rev() {
+            self.rope.remove(*s..*e);
+            self.rope.insert(*s, text);
+        }
+        let first = &sorted[0];
+        let pos = first.0 + first.2.chars().count();
+        self.cursors = vec![Cursor::new(pos.min(self.rope.len_chars()))];
+        self.primary = 0;
+        self.mark_modified();
+    }
+
     pub fn trim_trailing_whitespace(&mut self) {
         let mut changed = false;
         for line in (0..self.rope.len_lines()).rev() {
