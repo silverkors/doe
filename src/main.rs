@@ -9,6 +9,7 @@ mod app;
 mod commands;
 mod config;
 mod editor;
+mod eval;
 mod files;
 mod input;
 mod plugins;
