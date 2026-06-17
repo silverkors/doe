@@ -67,9 +67,10 @@ doe a.md b.rs c.toml   # open several files as buffers
   [plugin ABI](docs/wasm-plugins.md).
 - **Dynamic documents** — fenced code blocks marked `run` execute and their
   output is spliced into a `<!-- doe:output -->` region (`Alt+Enter` / palette
-  "Run Code Block"). A **sandboxed Lua** evaluator is built in (no fs/net, with
-  a timeout and output cap); running is gated by **per-folder trust** (Once /
-  Always / Never). See the [design](docs/dynamic-documents.md).
+  "Run Code Block"), shown as a **live "computed" card** (markers concealed,
+  raw when the cursor is inside). A **sandboxed Lua** evaluator is built in (no
+  fs/net, with a timeout and output cap); running is gated by **per-folder
+  trust** (Once / Always / Never). See the [design](docs/dynamic-documents.md).
 
 ## The modal (Spotlight-style, tabbed)
 

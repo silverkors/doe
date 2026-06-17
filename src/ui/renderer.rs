@@ -34,6 +34,11 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     let preview_callouts = settings.render_callouts && buf.language == Language::Markdown;
     let cursor_callout = if preview_callouts { cursor_callout_block(buf, cur_line) } else { None };
 
+    // Dynamic-document `doe:output` regions render as a "computed" card when the
+    // cursor is elsewhere (markers concealed); raw when the cursor is inside.
+    let preview_outputs = preview_callouts;
+    let cursor_output = if preview_outputs { output_region_at(buf, cur_line) } else { None };
+
     let highlighter = highlighter_for(buf);
     // Seed fence state from the lines above the viewport so a code block whose
     // opening fence has scrolled off the top still highlights correctly.
@@ -94,6 +99,7 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     let mut line_start = 0usize;
     let mut line_matches: Vec<(usize, usize)> = Vec::new();
     let mut loaded_preview: Option<PreviewRole> = None;
+    let mut loaded_output: Option<OutputRole> = None;
     let mut prev_glyphs: Vec<crate::syntax::markdown::InlineGlyph> = Vec::new();
     let mut prev_prefix: usize = 0;
     let mut sub = 0usize;
@@ -107,6 +113,11 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
             // Decide whether this line renders as part of a callout preview.
             loaded_preview = if preview_callouts {
                 preview_role(buf, vr.line, cur_line, cursor_callout, text_width)
+            } else {
+                None
+            };
+            loaded_output = if preview_outputs {
+                output_role(buf, vr.line, cur_line, cursor_output)
             } else {
                 None
             };
@@ -167,6 +178,12 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
         // Callout preview: draw a decorated card row and skip the raw cells.
         if let Some(role) = &loaded_preview {
             draw_callout_card_row(screen, &layout, app, vr.y, role, sub == 0, &prev_glyphs, prev_prefix, vr.start, vr.end);
+            continue;
+        }
+
+        // Dynamic-document output preview: draw the "computed" card row.
+        if let Some(role) = loaded_output {
+            draw_output_row(screen, &layout, app, vr.y, role, &chars, vr.start, vr.end);
             continue;
         }
 
@@ -471,6 +488,129 @@ fn cursor_callout_block(buf: &Buffer, cur_line: usize) -> Option<(usize, usize)>
     Some((start, end))
 }
 
+// --- dynamic-document output preview --------------------------------------
+
+/// How an output-region line renders in preview mode.
+#[derive(Debug, Clone, Copy)]
+enum OutputRole {
+    /// The `<!-- doe:output -->` marker line — top border.
+    Open,
+    /// A generated body line — card row.
+    Body,
+    /// The `<!-- /doe:output -->` marker line — bottom border.
+    Close,
+}
+
+fn line_is_output_open(buf: &Buffer, line: usize) -> bool {
+    let t = line_text(buf, line);
+    let t = t.trim();
+    t.starts_with("<!--")
+        && t.ends_with("-->")
+        && t.trim_start_matches("<!--").trim_start().starts_with("doe:output")
+}
+
+fn line_is_output_close(buf: &Buffer, line: usize) -> bool {
+    line_text(buf, line).trim() == "<!-- /doe:output -->"
+}
+
+/// The output region (inclusive marker-line span) containing `line`, if any.
+fn output_region_at(buf: &Buffer, line: usize) -> Option<(usize, usize)> {
+    // Walk up to the opening marker, bailing if a closing marker comes first.
+    let mut start = line;
+    loop {
+        if line_is_output_open(buf, start) {
+            break;
+        }
+        if start != line && line_is_output_close(buf, start) {
+            return None;
+        }
+        if start == 0 {
+            return None;
+        }
+        start -= 1;
+    }
+    // Walk down to the closing marker.
+    let mut end = start + 1;
+    let n = buf.len_lines();
+    while end < n && !line_is_output_close(buf, end) {
+        if line_is_output_open(buf, end) {
+            return None; // malformed: nested open
+        }
+        end += 1;
+    }
+    if end < n && line <= end {
+        Some((start, end))
+    } else {
+        None
+    }
+}
+
+/// What `line` renders as in output-preview mode (or `None` for raw — the line
+/// under the cursor and the cursor's own region stay raw).
+fn output_role(buf: &Buffer, line: usize, cur_line: usize, cursor_output: Option<(usize, usize)>) -> Option<OutputRole> {
+    if line == cur_line {
+        return None;
+    }
+    let (s, e) = output_region_at(buf, line)?;
+    if let Some((cs, ce)) = cursor_output {
+        if line >= cs && line <= ce {
+            return None;
+        }
+    }
+    Some(if line == s {
+        OutputRole::Open
+    } else if line == e {
+        OutputRole::Close
+    } else {
+        OutputRole::Body
+    })
+}
+
+/// Draw one row of a "computed" output card: tinted background, dim borders, the
+/// generated text in italic, with the HTML-comment markers concealed.
+fn draw_output_row(screen: &mut Screen, layout: &Layout, app: &App, y: u16, role: OutputRole, chars: &[char], seg_start: usize, seg_end: usize) {
+    let theme = &app.config.theme;
+    let accent = theme.comment;
+    let card_bg = tint(theme.background, accent, 0.10);
+    let x0 = layout.text_x();
+    let right = app.width.saturating_sub(1);
+
+    for x in x0..app.width {
+        screen.set(x, y, Cell { ch: ' ', fg: theme.foreground, bg: card_bg, bold: false, italic: false });
+    }
+    let dim = |ch: char| Cell { ch, fg: accent, bg: card_bg, bold: false, italic: false };
+
+    match role {
+        OutputRole::Open | OutputRole::Close => {
+            let (l, r) = if matches!(role, OutputRole::Open) { ('╭', '╮') } else { ('╰', '╯') };
+            screen.set(x0, y, dim(l));
+            for x in (x0 + 1)..right {
+                screen.set(x, y, dim('─'));
+            }
+            if right > x0 {
+                screen.set(right, y, dim(r));
+            }
+            if matches!(role, OutputRole::Open) {
+                screen.put_str(x0 + 2, y, " computed ", accent, card_bg, false, true);
+            }
+        }
+        OutputRole::Body => {
+            screen.set(x0, y, dim('│'));
+            for (k, col) in (seg_start..seg_end).enumerate() {
+                let x = x0 + 2 + k as u16;
+                if x >= right {
+                    break;
+                }
+                let ch = chars.get(col).copied().unwrap_or(' ');
+                screen.set(x, y, Cell { ch, fg: theme.foreground, bg: card_bg, bold: false, italic: true });
+            }
+            if right > x0 {
+                screen.set(right, y, dim('│'));
+            }
+        }
+    }
+}
+
 fn lerp(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
 }
@@ -565,3 +705,41 @@ fn draw_callout_card_row(
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::editor::Buffer;
+
+    fn buf(s: &str) -> Buffer {
+        let mut b = Buffer::empty();
+        b.set_text(s);
+        b
+    }
+
+    #[test]
+    fn detects_output_region() {
+        let b = buf("```lua run\nreturn 1\n```\n<!-- doe:output -->\n42\n<!-- /doe:output -->\nafter\n");
+        // Region spans the marker lines 3..5 inclusive.
+        assert_eq!(output_region_at(&b, 3), Some((3, 5)));
+        assert_eq!(output_region_at(&b, 4), Some((3, 5)));
+        assert_eq!(output_region_at(&b, 5), Some((3, 5)));
+        // Lines outside the region resolve to None.
+        assert_eq!(output_region_at(&b, 6), None);
+        assert_eq!(output_region_at(&b, 1), None);
+    }
+
+    #[test]
+    fn roles_and_cursor_makes_region_raw() {
+        let b = buf("a\n<!-- doe:output -->\n42\n<!-- /doe:output -->\n");
+        // Cursor outside (line 0): the region renders decorated.
+        assert!(matches!(output_role(&b, 1, 0, None), Some(OutputRole::Open)));
+        assert!(matches!(output_role(&b, 2, 0, None), Some(OutputRole::Body)));
+        assert!(matches!(output_role(&b, 3, 0, None), Some(OutputRole::Close)));
+        // Cursor inside the region: every line stays raw.
+        let cur = output_region_at(&b, 2);
+        assert!(output_role(&b, 1, 2, cur).is_none());
+        assert!(output_role(&b, 2, 2, cur).is_none());
+        assert!(output_role(&b, 3, 2, cur).is_none());
+    }
+}

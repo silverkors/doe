@@ -3,10 +3,11 @@
 > **Status:** the "smallest safe slice" (§6) is **implemented** in 0.3 — runnable
 > fenced blocks, `RunCodeBlock`/`RunDocument`, output spliced into a
 > `doe:output` region as one undo step, a sandboxed **Lua** evaluator (`mlua`,
-> stripped stdlib, timeout, output cap), and per-folder trust (Once / Always /
-> Never). Live-preview of the output region (§6.5) is not done yet; Python/JS
-> remain additive via the evaluator table or a WASM plugin. The rest below is the
-> original design.
+> stripped stdlib, timeout, output cap), per-folder trust (Once / Always /
+> Never), and **live-preview of the output region** (§6.5 — markers concealed,
+> the generated text shown as a dim "computed" card when the cursor is
+> elsewhere, raw when it's inside). Python/JS remain additive via the evaluator
+> table or a WASM plugin. The rest below is the original design.
 
 Goal: let a document *do things with code* so it can be dynamic — e.g. a
 Markdown file that embeds Lua/Python/other code which runs and whose output
