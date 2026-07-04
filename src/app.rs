@@ -199,6 +199,8 @@ impl App {
             disk_warned: false,
             last_drag_row: 0,
         };
+        app.sync_tab_width();
+
         // Load sandboxed WASM modules from <config>/plugins/*.wasm — those that
         // export `doe_eval` register as document evaluators, the rest as plugins.
         app.load_wasm_modules();
@@ -319,6 +321,16 @@ impl App {
         self.config.settings.soft_wrap
     }
 
+    /// Propagate the configured `tab_width` to every buffer as the uniform
+    /// fallback for tab-stop resolution. Buffers re-parse their front matter only
+    /// when the width actually changes.
+    fn sync_tab_width(&mut self) {
+        let w = self.config.settings.tab_width;
+        for b in &mut self.buffers {
+            b.set_tab_width(w);
+        }
+    }
+
     fn ensure_cursor_visible(&mut self) {
         if self.soft_wrap() {
             self.ensure_visible_wrapped();
@@ -332,7 +344,8 @@ impl App {
         let cols = self.text_cols().max(1);
         let (line, col) = {
             let b = self.active_buffer();
-            b.pos_to_line_col(b.primary_cursor().head)
+            let (line, off) = b.pos_to_line_col(b.primary_cursor().head);
+            (line, b.display_col(line, off))
         };
         if line < self.top_line {
             self.top_line = line;
@@ -819,6 +832,8 @@ impl App {
                 }
             }
         }
+        // A changed tab width re-resolves every buffer's tab stops.
+        self.sync_tab_width();
         // Geometry-affecting settings need the viewport re-clamped.
         self.ensure_cursor_visible();
     }
@@ -1029,8 +1044,9 @@ impl App {
             if line >= b.len_lines() {
                 return Some(b.len_chars());
             }
-            let char_col = self.left_col + (col - gutter) as usize;
-            Some(b.line_col_to_pos(line, char_col))
+            let display_col = self.left_col + (col - gutter) as usize;
+            let off = b.char_off_for_col(line, display_col);
+            Some(b.rope.line_to_char(line) + off)
         }
     }
 
@@ -1304,6 +1320,7 @@ impl App {
         match Buffer::from_file(&path) {
             Ok(mut b) => {
                 b.recovery_id = self.fresh_recovery_id();
+                b.set_tab_width(self.config.settings.tab_width);
                 self.buffers.push(b);
                 self.active = self.buffers.len() - 1;
                 self.top_line = 0;
@@ -1625,6 +1642,7 @@ impl App {
         if self.buffers.len() == 1 {
             let mut b = Buffer::empty();
             b.recovery_id = self.fresh_recovery_id();
+            b.set_tab_width(self.config.settings.tab_width);
             self.buffers[0] = b;
         } else {
             let closed = self.buffers.remove(self.active);

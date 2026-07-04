@@ -52,10 +52,14 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     // A visual row is a slice `[start, end)` of one buffer line on one screen
     // row. Without soft wrap there is exactly one per line (with horizontal
     // scroll); with soft wrap a long line spans several.
+    // `start`/`end` are char offsets within the buffer line; `base_col` is the
+    // display column drawn at the row's first cell (so tab-expanded glyphs land
+    // at `text_x() + display_col - base_col`).
     struct VisRow {
         line: usize,
         start: usize,
         end: usize,
+        base_col: usize,
         y: u16,
         gutter: bool,
     }
@@ -69,7 +73,8 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
             }
             let segs = wrap::segments(buf, vl, width);
             let (s, e) = segs[vs.min(segs.len() - 1)];
-            visrows.push(VisRow { line: vl, start: s, end: e, y: row, gutter: vs == 0 });
+            let base_col = buf.display_col(vl, s);
+            visrows.push(VisRow { line: vl, start: s, end: e, base_col, y: row, gutter: vs == 0 });
             match wrap::next_visual(buf, vl, vs, width) {
                 Some((l, ss)) => {
                     vl = l;
@@ -85,9 +90,13 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
                 break;
             }
             let line_len = buf.line_len_chars(ln);
-            let s = app.left_col.min(line_len);
-            let e = (app.left_col + text_width).min(line_len);
-            visrows.push(VisRow { line: ln, start: s, end: e, y: row, gutter: true });
+            // Horizontal scroll is in display columns; map the visible column
+            // window back to char offsets (a tab straddling either edge is
+            // clamped when painted). One extra char keeps a tab crossing the
+            // right edge drawable.
+            let s = buf.char_off_for_col(ln, app.left_col);
+            let e = (buf.char_off_for_col(ln, app.left_col + text_width) + 1).min(line_len);
+            visrows.push(VisRow { line: ln, start: s, end: e, base_col: app.left_col, y: row, gutter: true });
         }
     }
 
@@ -194,25 +203,21 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
             continue;
         }
 
-        for (k, col) in (vr.start..vr.end).enumerate() {
-            let x = layout.text_x() + k as u16;
-            if x >= app.width {
-                break;
-            }
+        // Walk the row's chars, tracking the absolute display column so tabs
+        // expand to filler cells reaching their next stop. `acol` is the column
+        // of the char about to be drawn.
+        let tabstops = buf.tabstops();
+        let mut acol = buf.display_col(vr.line, vr.start);
+        let right = vr.base_col + text_width;
+        for col in vr.start..vr.end {
             let idx = line_start + col;
             let ch = chars[col];
+            let width_cells = if ch == '\t' { tabstops.tab_width_at(acol) } else { 1 };
 
             let mut fg = theme.color_for(kinds[col]);
             let mut bg = theme.background;
             let mut bold = bolds[col];
-
             let is_ws = ch == ' ' || ch == '\t';
-            let disp = match ch {
-                '\t' if settings.show_whitespace => '→',
-                ' ' if settings.show_whitespace => '·',
-                c if c.is_control() => ' ',
-                c => c,
-            };
             if settings.show_whitespace && is_ws {
                 fg = theme.whitespace;
             }
@@ -232,7 +237,35 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
                 bg = theme.selection;
             }
 
-            screen.set(x, vr.y, Cell { ch: disp, fg, bg, bold, italic: itals[col] });
+            // Paint each display cell this char occupies that falls inside the
+            // visible column window. Tabs draw their leader (or blanks); the
+            // whitespace arrow sits on the tab's first cell.
+            let tab_leader = tabstops.leader_at(acol);
+            for cell in 0..width_cells {
+                let cur = acol + cell;
+                if cur < vr.base_col {
+                    continue; // scrolled off the left edge
+                }
+                if cur >= right {
+                    break;
+                }
+                let x = layout.text_x() + (cur - vr.base_col) as u16;
+                if x >= app.width {
+                    break;
+                }
+                let disp = match ch {
+                    '\t' if settings.show_whitespace && cell == 0 => '→',
+                    '\t' => tab_leader.unwrap_or(' '),
+                    ' ' if settings.show_whitespace => '·',
+                    c if c.is_control() => ' ',
+                    c => c,
+                };
+                screen.set(x, vr.y, Cell { ch: disp, fg, bg, bold, italic: itals[col] });
+            }
+            acol += width_cells;
+            if acol >= right {
+                break;
+            }
         }
     }
 
@@ -259,11 +292,11 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
             Some(r) => &visrows[r],
             None => continue,
         };
-        let k = off - vr.start;
-        if k >= text_width {
+        let dcol = buf.display_col(cl, off);
+        if dcol < vr.base_col || dcol - vr.base_col >= text_width {
             continue;
         }
-        let x = layout.text_x() + k as u16;
+        let x = layout.text_x() + (dcol - vr.base_col) as u16;
         let y = vr.y;
         if i == buf.primary {
             primary_screen_pos = Some((x, y));

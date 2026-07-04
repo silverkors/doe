@@ -4,6 +4,7 @@
 //! consistent whether there is one caret or fifty.
 
 use super::cursor::Cursor;
+use super::tabstops::{self, TabStops};
 use super::undo::{History, Snapshot};
 use crate::syntax::Language;
 use anyhow::{Context, Result};
@@ -35,6 +36,12 @@ pub struct Buffer {
     pub recovery_id: u64,
     history: History,
     disk_mtime: Option<SystemTime>,
+    /// Uniform fallback width (synced from `Settings::tab_width`) used to resolve
+    /// tab stops beyond any explicit ones declared in front matter.
+    tab_width: usize,
+    /// Resolved tab stops for this document, cached and refreshed on every edit
+    /// (front matter is small and lives at the top, so this stays cheap).
+    tabstops: TabStops,
 }
 
 impl Buffer {
@@ -51,6 +58,8 @@ impl Buffer {
             recovery_id: 0,
             history: History::new(),
             disk_mtime: None,
+            tab_width: 4,
+            tabstops: TabStops::uniform(4),
         }
     }
 
@@ -63,7 +72,7 @@ impl Buffer {
             Rope::new()
         };
         let mtime = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
-        Ok(Buffer {
+        let mut buf = Buffer {
             rope,
             language: Language::from_path(path),
             path: Some(path.to_path_buf()),
@@ -75,12 +84,72 @@ impl Buffer {
             recovery_id: 0,
             history: History::new(),
             disk_mtime: mtime,
-        })
+            tab_width: 4,
+            tabstops: TabStops::uniform(4),
+        };
+        buf.refresh_tabstops();
+        Ok(buf)
     }
 
     fn mark_modified(&mut self) {
         self.modified = true;
         self.revision = self.revision.wrapping_add(1);
+        self.refresh_tabstops();
+    }
+
+    /// Largest slice of the document head that front matter could occupy. Tab
+    /// stops are resolved from this bounded prefix so re-parsing per edit stays
+    /// O(1) regardless of file size.
+    const FRONTMATTER_SCAN: usize = 8192;
+
+    /// Recompute the cached tab stops from the document's front matter, using
+    /// the current `tab_width` as the uniform fallback.
+    pub fn refresh_tabstops(&mut self) {
+        let n = self.rope.len_chars().min(Self::FRONTMATTER_SCAN);
+        let head = self.rope.slice(0..n).to_string();
+        self.tabstops = tabstops::from_document(&head, self.tab_width.max(1));
+    }
+
+    /// Sync the uniform fallback width from settings, recomputing stops if it
+    /// changed. Called when configuration loads or `tab_width` is edited.
+    pub fn set_tab_width(&mut self, width: usize) {
+        let width = width.max(1);
+        if width != self.tab_width {
+            self.tab_width = width;
+            self.refresh_tabstops();
+        }
+    }
+
+    pub fn tabstops(&self) -> &TabStops {
+        &self.tabstops
+    }
+
+    #[cfg(test)]
+    pub fn set_tabstops_for_test(&mut self, stops: TabStops) {
+        self.tabstops = stops;
+    }
+
+    /// Characters of `line` as a `Vec`, excluding the trailing newline.
+    fn line_chars(&self, line: usize) -> Vec<char> {
+        let start = self.rope.line_to_char(line);
+        let len = self.line_len_chars(line);
+        self.rope.slice(start..start + len).chars().collect()
+    }
+
+    /// Display column of a char offset within `line` (tab-aware).
+    pub fn display_col(&self, line: usize, off: usize) -> usize {
+        self.tabstops.char_to_col(&self.line_chars(line), off)
+    }
+
+    /// Char offset within `line` nearest the given display column (tab-aware).
+    pub fn char_off_for_col(&self, line: usize, col: usize) -> usize {
+        self.tabstops.col_to_char(&self.line_chars(line), col)
+    }
+
+    /// Total display width of `line` (tab-aware).
+    #[allow(dead_code)] // used by the tab-stop ruler UI (later step)
+    pub fn line_display_width(&self, line: usize) -> usize {
+        self.tabstops.line_width(&self.line_chars(line))
     }
 
     /// Replace the entire contents (used to restore recovered/unsaved content).
@@ -136,6 +205,10 @@ impl Buffer {
         (line, col)
     }
 
+    /// Char position for a `(line, char-column)` pair. Note this is a *char*
+    /// column, not a display column — use [`Buffer::char_off_for_col`] for
+    /// tab-aware (display-column) mapping.
+    #[allow(dead_code)]
     pub fn line_col_to_pos(&self, line: usize, col: usize) -> usize {
         let last = self.rope.len_lines().saturating_sub(1);
         let line = line.min(last);
@@ -306,6 +379,7 @@ impl Buffer {
         self.insert_at_cursors(&ch.to_string(), coalesce);
     }
 
+    #[allow(dead_code)]
     pub fn insert_str(&mut self, s: &str) {
         self.insert_at_cursors(s, false);
     }
@@ -385,13 +459,30 @@ impl Buffer {
         self.apply_edits(edits);
     }
 
-    pub fn insert_tab(&mut self, insert_spaces: bool, tab_width: usize) {
-        if insert_spaces {
-            let spaces = " ".repeat(tab_width.max(1));
-            self.insert_str(&spaces);
-        } else {
-            self.insert_str("\t");
-        }
+    /// Insert a tab at every cursor. With `insert_spaces` it expands to the
+    /// number of spaces needed to reach the next tab stop *for that cursor's
+    /// column* (so custom stops are honoured); otherwise it stores a literal
+    /// `\t`, which reflows if the stops change. The `_tab_width` argument is kept
+    /// for call-site compatibility — the uniform fallback now lives on the
+    /// buffer's resolved [`TabStops`].
+    pub fn insert_tab(&mut self, insert_spaces: bool, _tab_width: usize) {
+        self.record(false);
+        let edits = self
+            .cursors
+            .iter()
+            .map(|c| {
+                let (s, e) = c.range();
+                let text = if insert_spaces {
+                    let (line, off) = self.pos_to_line_col(s);
+                    let col = self.display_col(line, off);
+                    " ".repeat(self.tabstops.tab_width_at(col))
+                } else {
+                    "\t".to_string()
+                };
+                Edit { start: s, end: e, text }
+            })
+            .collect();
+        self.apply_edits(edits);
     }
 
     // --- movement ----------------------------------------------------------
@@ -437,11 +528,12 @@ impl Buffer {
         let cursors = std::mem::take(&mut self.cursors);
         let mut moved = Vec::with_capacity(cursors.len());
         for mut c in cursors {
-            let (line, col) = self.pos_to_line_col(c.head);
-            let goal = c.goal_col.unwrap_or(col);
+            let (line, off) = self.pos_to_line_col(c.head);
+            // Goal column is a display column so tabs preserve visual alignment.
+            let goal = c.goal_col.unwrap_or_else(|| self.display_col(line, off));
             let target = (line as isize + delta).clamp(0, last_line as isize) as usize;
-            let new_col = goal.min(self.line_len_chars(target));
-            let pos = self.rope.line_to_char(target) + new_col;
+            let new_off = self.char_off_for_col(target, goal);
+            let pos = self.rope.line_to_char(target) + new_off;
             c.head = pos;
             if !extend {
                 c.anchor = pos;
