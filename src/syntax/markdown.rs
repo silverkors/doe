@@ -130,6 +130,14 @@ fn inline(chars: &[char], from: usize, to: usize, out: &mut Vec<Span>, base: Sty
     let mut i = from;
     while i < to {
         let c = chars[i];
+        // Backslash escape: `\*` is a literal `*`. The backslash is markup
+        // (dimmed raw, concealed in previews); the escaped char is plain text
+        // and never opens an inline construct.
+        if c == '\\' && i + 1 < to && chars[i + 1].is_ascii_punctuation() {
+            out.push(Span::new(i, i + 1, StyleKind::MarkupPunct));
+            i += 2;
+            continue;
+        }
         // Inline code: `code`
         if c == '`' {
             if let Some(j) = find_char(chars, i + 1, to, '`') {
@@ -321,6 +329,28 @@ mod tests {
         assert!(spans.iter().any(|s| s.kind == StyleKind::Callout)); // accent bar/title
         assert!(spans.iter().any(|s| s.kind == StyleKind::MarkupPunct)); // [!key]
         assert!(spans.iter().any(|s| s.kind == StyleKind::Italic)); // *Svensk psalm*
+    }
+
+    #[test]
+    fn backslash_escape_conceals_backslash_keeps_char() {
+        // `\*` renders as a literal `*` — backslash concealed, star plain.
+        let g = super::rendered_inline("frälsningen \\*");
+        let s: String = g.iter().map(|g| g.ch).collect();
+        assert_eq!(s, "frälsningen *");
+        assert!(g.iter().all(|g| g.kind == StyleKind::Default));
+    }
+
+    #[test]
+    fn escaped_star_does_not_open_emphasis() {
+        // The escaped star is text, so no italic span starts at it.
+        let g = super::rendered_inline("gå hem, \\* i frid \\*");
+        let s: String = g.iter().map(|g| g.ch).collect();
+        assert_eq!(s, "gå hem, * i frid *");
+        assert!(g.iter().all(|g| !g.italic));
+        // Unescaped emphasis still works alongside.
+        let g = super::rendered_inline("\\* *kursiv*");
+        let s: String = g.iter().map(|g| g.ch).collect();
+        assert_eq!(s, "* kursiv");
     }
 
     #[test]
