@@ -309,8 +309,15 @@ impl App {
     }
 
     fn text_rows(&self) -> usize {
-        // One reserved row at the bottom: the combined status/command line.
-        self.height.saturating_sub(1) as usize
+        // Reserved rows: the status/command line at the bottom, plus the
+        // tab-stop ruler at the top when shown.
+        let reserved = 1 + self.config.settings.show_tab_ruler as u16;
+        self.height.saturating_sub(reserved) as usize
+    }
+
+    /// Screen rows above the text area (the tab-stop ruler, when shown).
+    fn text_top(&self) -> u16 {
+        self.config.settings.show_tab_ruler as u16
     }
 
     fn text_cols(&self) -> usize {
@@ -811,6 +818,7 @@ impl App {
                 "render_callouts" => s.render_callouts = !s.render_callouts,
                 "touch_scroll" => s.touch_scroll = !s.touch_scroll,
                 "mouse" => s.mouse = !s.mouse,
+                "show_tab_ruler" => s.show_tab_ruler = !s.show_tab_ruler,
                 _ => {}
             },
             settings::Kind::Int(lo, hi) => {
@@ -855,6 +863,7 @@ impl App {
             "render_callouts" => on(s.render_callouts),
             "touch_scroll" => on(s.touch_scroll),
             "mouse" => on(s.mouse),
+            "show_tab_ruler" => on(s.show_tab_ruler),
             _ => String::new(),
         }
     }
@@ -948,6 +957,16 @@ impl App {
         if !self.config.settings.mouse {
             return;
         }
+        // Clicks on the ruler row manage tab stops instead of moving the
+        // cursor; other events (scroll wheel) fall through to normal handling.
+        if self.config.settings.show_tab_ruler && ev.row == 0 {
+            if let MouseEventKind::Down(btn @ (MouseButton::Left | MouseButton::Right)) = ev.kind {
+                if let Some(col) = self.ruler_col(ev.column) {
+                    self.ruler_click(col, btn == MouseButton::Right);
+                }
+                return;
+            }
+        }
         match ev.kind {
             MouseEventKind::ScrollDown => self.scroll(3),
             MouseEventKind::ScrollUp => self.scroll(-3),
@@ -981,6 +1000,65 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Display column under a ruler-row click, or `None` in the gutter.
+    fn ruler_col(&self, x: u16) -> Option<usize> {
+        let gutter = self.gutter();
+        if x < gutter {
+            return None;
+        }
+        let base = if self.soft_wrap() { 0 } else { self.left_col };
+        Some(base + (x - gutter) as usize)
+    }
+
+    /// Handle a click on the tab-stop ruler. Clicking an empty column adds a
+    /// left stop; clicking an existing stop cycles its alignment
+    /// (L → R → C → D → removed); right-click removes it directly.
+    fn ruler_click(&mut self, col: usize, remove: bool) {
+        use crate::editor::tabstops::TabAlign;
+        let b = self.active_buffer_mut();
+        let mut stops = b.tabstops().explicit().to_vec();
+        let hit = stops.iter().position(|s| s.col.abs_diff(col) <= 1);
+        let msg = match hit {
+            Some(i) if remove => {
+                let c = stops.remove(i).col;
+                b.set_tab_stops(stops);
+                format!("removed tab stop at column {c}")
+            }
+            Some(i) => {
+                let c = stops[i].col;
+                let next = match stops[i].align {
+                    TabAlign::Left => Some((TabAlign::Right, "right")),
+                    TabAlign::Right => Some((TabAlign::Center, "center")),
+                    TabAlign::Center => Some((TabAlign::Decimal, "decimal")),
+                    TabAlign::Decimal => None,
+                };
+                match next {
+                    Some((a, label)) => {
+                        stops[i].align = a;
+                        b.set_tab_stops(stops);
+                        format!("tab stop {c}: {label}-aligned (click cycles, right-click removes)")
+                    }
+                    None => {
+                        stops.remove(i);
+                        b.set_tab_stops(stops);
+                        format!("removed tab stop at column {c}")
+                    }
+                }
+            }
+            None if remove => return,
+            None => {
+                b.add_tab_stop(col);
+                format!("tab stop set at column {col} (click cycles alignment)")
+            }
+        };
+        self.set_status(msg);
+        // Same invalidation as an `edited` command: the front matter changed.
+        self.search.matches.clear();
+        self.diagnostics.clear();
+        self.notify(Event::BufferChange);
+        self.ensure_cursor_visible();
     }
 
     /// Scroll the viewport by `delta` rows (visual rows when wrapping).
@@ -1017,6 +1095,8 @@ impl App {
     /// text area.
     fn mouse_to_pos(&self, col: u16, row: u16) -> Option<usize> {
         let gutter = self.gutter();
+        // Screen row -> text-area row (the ruler row, if shown, is above it).
+        let row = row.checked_sub(self.text_top())?;
         if row as usize >= self.text_rows() {
             return None;
         }
@@ -1115,7 +1195,8 @@ impl App {
                     b.display_col(line, off)
                 });
                 if b.add_tab_stop(col) {
-                    self.set_status(format!("tab stop set at column {col}"));
+                    let hint = if self.config.settings.show_tab_ruler { "" } else { " — :ruler to manage visually" };
+                    self.set_status(format!("tab stop set at column {col}{hint}"));
                     edited = true;
                 } else {
                     self.set_status(format!("tab stop already at column {col}"));
@@ -1140,6 +1221,17 @@ impl App {
                 } else {
                     self.set_status("no tab stops to clear");
                 }
+            }
+            Command::ToggleTabRuler => {
+                let s = &mut self.config.settings;
+                s.show_tab_ruler = !s.show_tab_ruler;
+                let on = s.show_tab_ruler;
+                self.set_status(if on {
+                    "tab ruler on — click sets a stop, click a stop cycles L/R/C/D, right-click removes"
+                } else {
+                    "tab ruler off"
+                });
+                moved = true; // text area height changed; re-clamp the viewport
             }
             Command::Undo => {
                 if !self.active_buffer_mut().undo() {

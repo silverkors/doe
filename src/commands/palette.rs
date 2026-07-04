@@ -42,6 +42,7 @@ pub fn catalog() -> &'static [PaletteAction] {
         PaletteAction { command: "expand_selection", title: "Expand Selection", hint: "Alt+Shift+Up" },
         PaletteAction { command: "shrink_selection", title: "Shrink Selection", hint: "Alt+Shift+Down" },
         PaletteAction { command: "go_to_symbol", title: "Go to Symbol…", hint: "Ctrl+Shift+O" },
+        PaletteAction { command: "toggle_tab_ruler", title: "Toggle Tab Ruler", hint: "" },
         PaletteAction { command: "set_tab_stop", title: "Tab Stop: Set at Cursor Column", hint: "" },
         PaletteAction { command: "remove_tab_stop", title: "Tab Stop: Remove Nearest", hint: "" },
         PaletteAction { command: "clear_tab_stops", title: "Tab Stop: Clear All", hint: "" },

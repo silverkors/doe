@@ -88,6 +88,7 @@ pub enum Command {
     SetTabStop(Option<usize>),
     RemoveTabStop,
     ClearTabStops,
+    ToggleTabRuler,
 
     // View
     ToggleSoftWrap,

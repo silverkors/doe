@@ -45,6 +45,9 @@ pub struct Settings {
     /// Drag (one-finger touch) scrolls the document instead of selecting text.
     /// Useful over SSH/tmux on touch clients (e.g. Termius).
     pub touch_scroll: bool,
+    /// Show the tab-stop ruler row above the text area (click to set stops,
+    /// click a stop to cycle its alignment, right-click to remove).
+    pub show_tab_ruler: bool,
 }
 
 impl Default for Settings {
@@ -62,6 +65,7 @@ impl Default for Settings {
             trim_trailing_whitespace_on_save: false,
             render_callouts: true,
             touch_scroll: false,
+            show_tab_ruler: false,
         }
     }
 }

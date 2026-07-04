@@ -26,35 +26,28 @@ pub fn segments(buf: &Buffer, line: usize, width: usize) -> Vec<(usize, usize)> 
     }
     let start = buf.rope.line_to_char(line);
     let chars: Vec<char> = buf.rope.slice(start..start + len).chars().collect();
-    let stops = buf.tabstops();
+    // One layout pass for the whole line; spans hold *absolute* display columns,
+    // so tab stops stay anchored to the document's layout rather than to each
+    // wrapped row, and a row's width is just a difference of span columns.
+    let (spans, _) = buf.tabstops().spans(&chars);
 
     let mut segs = Vec::new();
     let mut seg_start = 0; // char index where the current visual row begins
-    let mut col = 0; // absolute display column from the start of the line
-    let mut seg_col = 0; // display column relative to `seg_start` (the row's x)
     let mut last_ws: Option<usize> = None; // char after the last whitespace in row
     let mut i = 0;
     while i < len {
-        let c = chars[i];
-        // Tab cell-width depends on the *absolute* line column, so stops stay
-        // anchored to the document's layout rather than to each wrapped row.
-        let w = if c == '\t' { stops.tab_width_at(col) } else { 1 };
-        if seg_col + w > width && i > seg_start {
-            // Break: prefer the last whitespace boundary in this row.
+        let end_col = spans[i].col + spans[i].width;
+        if end_col - spans[seg_start].col > width && i > seg_start {
+            // Break: prefer the last whitespace boundary in this row. Chars
+            // between that boundary and `i` move to the new row, so rewind.
             let brk = last_ws.filter(|&b| b > seg_start).unwrap_or(i);
             segs.push((seg_start, brk));
-            // Re-establish the running columns at the new row's start and rewind
-            // to it: chars between a whitespace break and `i` belong to this row.
             seg_start = brk;
-            seg_col = 0;
-            col = stops.char_to_col(&chars, brk);
             last_ws = None;
             i = brk;
             continue;
         }
-        col += w;
-        seg_col += w;
-        if c == ' ' || c == '\t' {
+        if chars[i] == ' ' || chars[i] == '\t' {
             last_ws = Some(i + 1);
         }
         i += 1;

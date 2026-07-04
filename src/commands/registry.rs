@@ -82,6 +82,7 @@ pub fn parse(input: &str) -> Option<Command> {
         "goto_buffer" => Command::GotoBuffer(rest.parse::<usize>().ok()?.saturating_sub(1)),
 
         "set_tab_stop" => Command::SetTabStop(None),
+        "toggle_tab_ruler" | "ruler" => Command::ToggleTabRuler,
         "remove_tab_stop" => Command::RemoveTabStop,
         "clear_tab_stops" => Command::ClearTabStops,
         // `:tabstop` power form — bare sets at the cursor; a number sets at that

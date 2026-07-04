@@ -85,16 +85,20 @@ impl TabStops {
         &self.stops
     }
 
-    /// The display column of the first stop strictly greater than `col`. Beyond
-    /// the last explicit stop it rounds up to the next multiple of
-    /// `default_every` (always strictly greater than `col`).
-    pub fn next_col(&self, col: usize) -> usize {
+    /// The first stop strictly greater than `col`: its column and alignment.
+    /// Beyond the last explicit stop it rounds up to the next multiple of
+    /// `default_every` (always strictly greater than `col`, always Left).
+    fn stop_after(&self, col: usize) -> (usize, TabAlign) {
         if let Some(s) = self.stops.iter().find(|s| s.col > col) {
-            return s.col;
+            return (s.col, s.align);
         }
-        // Next multiple of `default_every` strictly greater than `col`.
         let w = self.default_every;
-        (col / w + 1) * w
+        ((col / w + 1) * w, TabAlign::Left)
+    }
+
+    /// The display column of the first stop strictly greater than `col`.
+    pub fn next_col(&self, col: usize) -> usize {
+        self.stop_after(col).0
     }
 
     /// Cell width a tab occupies when it starts at display column `col`.
@@ -109,36 +113,85 @@ impl TabStops {
         self.stops.iter().find(|s| s.col > col).and_then(|s| s.leader)
     }
 
+    /// Per-char display layout of a line: for each char, the display column it
+    /// starts at and the number of cells it occupies. Returns the spans plus the
+    /// line's total display width. This is the single place tab expansion —
+    /// including right/centre/decimal alignment lookahead — happens; everything
+    /// else (rendering, cursor, mouse, wrap) derives from it.
+    ///
+    /// Alignment: a tab reaching a non-Left stop measures the *segment* that
+    /// follows it (up to the next tab or end of line) and shrinks itself so the
+    /// segment ends at (Right), centres on (Center), or puts its decimal
+    /// separator at (Decimal) the stop column. A tab always occupies at least
+    /// one cell, so overflowing segments degrade gracefully by shifting right.
+    pub fn spans(&self, chars: &[char]) -> (Vec<CellSpan>, usize) {
+        let mut out = Vec::with_capacity(chars.len());
+        let mut col = 0;
+        for (i, &c) in chars.iter().enumerate() {
+            if c != '\t' {
+                out.push(CellSpan { col, width: 1 });
+                col += 1;
+                continue;
+            }
+            let (stop_col, align) = self.stop_after(col);
+            let seg_end = chars[i + 1..]
+                .iter()
+                .position(|&c| c == '\t')
+                .map_or(chars.len(), |p| i + 1 + p);
+            let seg = &chars[i + 1..seg_end];
+            let target = match align {
+                TabAlign::Left => stop_col,
+                TabAlign::Right => stop_col.saturating_sub(seg.len()),
+                TabAlign::Center => stop_col.saturating_sub(seg.len() / 2),
+                TabAlign::Decimal => {
+                    // Segment start so the separator lands on the stop; a
+                    // number without a separator right-aligns (Word behaviour).
+                    let int_len = seg.iter().position(|&c| c == '.' || c == ',').unwrap_or(seg.len());
+                    stop_col.saturating_sub(int_len)
+                }
+            };
+            let width = target.saturating_sub(col).max(1);
+            out.push(CellSpan { col, width });
+            col += width;
+        }
+        (out, col)
+    }
+
     /// Display column of the char at offset `upto` within `chars` (i.e. the
     /// column the cursor sits at when placed before `chars[upto]`).
     pub fn char_to_col(&self, chars: &[char], upto: usize) -> usize {
-        let mut col = 0;
-        for &c in &chars[..upto.min(chars.len())] {
-            col = if c == '\t' { self.next_col(col) } else { col + 1 };
+        let (spans, total) = self.spans(chars);
+        if upto >= chars.len() {
+            total
+        } else {
+            spans[upto].col
         }
-        col
     }
 
     /// Total display width of a whole line.
-    #[allow(dead_code)] // used by the tab-stop ruler UI (later step)
     pub fn line_width(&self, chars: &[char]) -> usize {
-        self.char_to_col(chars, chars.len())
+        self.spans(chars).1
     }
 
     /// Char offset nearest the target display `col`. A click landing inside a
     /// tab's whitespace snaps to whichever edge is closer.
     pub fn col_to_char(&self, chars: &[char], target: usize) -> usize {
-        let mut col = 0;
-        for (i, &c) in chars.iter().enumerate() {
-            let w = if c == '\t' { self.tab_width_at(col) } else { 1 };
-            if target < col + w {
-                // Inside this cell span: snap to the nearer boundary.
-                return if target - col < w.div_ceil(2) { i } else { i + 1 };
+        let (spans, _) = self.spans(chars);
+        for (i, s) in spans.iter().enumerate() {
+            if target < s.col + s.width {
+                return if target.saturating_sub(s.col) < s.width.div_ceil(2) { i } else { i + 1 };
             }
-            col += w;
         }
         chars.len()
     }
+}
+
+/// One char's place in a line's display layout: starting column and cell width
+/// (1 for everything except tabs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellSpan {
+    pub col: usize,
+    pub width: usize,
 }
 
 /// Resolve the tab stops for a document from its leading YAML front matter,
@@ -463,6 +516,76 @@ mod tests {
     fn unterminated_frontmatter_is_ignored() {
         let t = from_document("---\ntabstops: [8]\nno closing fence\n", 4);
         assert!(t.is_empty());
+    }
+
+    fn stops(v: Vec<TabStop>) -> TabStops {
+        TabStops::new(v, 4)
+    }
+
+    #[test]
+    fn right_align_ends_segment_at_stop() {
+        // "a\tbb" with a right stop at 10: "bb" occupies cols 8..10.
+        let t = stops(vec![TabStop { col: 10, align: TabAlign::Right, leader: None }]);
+        let chars: Vec<char> = "a\tbb".chars().collect();
+        let (s, total) = t.spans(&chars);
+        assert_eq!(s[1], CellSpan { col: 1, width: 7 }); // the tab
+        assert_eq!(s[2].col, 8); // first 'b'
+        assert_eq!(s[3].col, 9); // second 'b' ends flush at 10
+        assert_eq!(total, 10);
+    }
+
+    #[test]
+    fn center_align_centres_segment_on_stop() {
+        // "a\tbbbb" centred on 10: segment starts at 8, middle at the stop.
+        let t = stops(vec![TabStop { col: 10, align: TabAlign::Center, leader: None }]);
+        let chars: Vec<char> = "a\tbbbb".chars().collect();
+        let (s, _) = t.spans(&chars);
+        assert_eq!(s[2].col, 8);
+        // Odd-length segment: middle char lands exactly on the stop.
+        let chars: Vec<char> = "a\tbbb".chars().collect();
+        let (s, _) = t.spans(&chars);
+        assert_eq!(s[3].col, 10); // middle 'b'
+    }
+
+    #[test]
+    fn decimal_align_puts_separator_at_stop() {
+        let t = stops(vec![TabStop { col: 10, align: TabAlign::Decimal, leader: None }]);
+        // Dot separator.
+        let chars: Vec<char> = "x\t12.5".chars().collect();
+        let (s, _) = t.spans(&chars);
+        assert_eq!(s[4].col, 10); // the '.'
+        // Comma separator (Swedish locale).
+        let chars: Vec<char> = "x\t3,14".chars().collect();
+        let (s, _) = t.spans(&chars);
+        assert_eq!(s[3].col, 10); // the ','
+        // No separator: right-aligns against the stop.
+        let chars: Vec<char> = "x\t1234".chars().collect();
+        let (s, _) = t.spans(&chars);
+        assert_eq!(s[5].col, 9); // last digit ends flush at 10
+    }
+
+    #[test]
+    fn aligned_overflow_keeps_minimum_one_cell() {
+        // Segment wider than the space before the stop: the tab degrades to one
+        // cell and the text just shifts right.
+        let t = stops(vec![TabStop { col: 4, align: TabAlign::Right, leader: None }]);
+        let chars: Vec<char> = "abc\tlongtext".chars().collect();
+        let (s, _) = t.spans(&chars);
+        assert_eq!(s[3].width, 1); // the tab
+        assert_eq!(s[4].col, 4); // text follows immediately
+    }
+
+    #[test]
+    fn alignment_only_reaches_to_next_tab() {
+        // Two columns: the right-aligned segment is only up to the second tab.
+        let t = stops(vec![
+            TabStop { col: 10, align: TabAlign::Right, leader: None },
+            TabStop::left(14),
+        ]);
+        let chars: Vec<char> = "a\tbb\tcc".chars().collect();
+        let (s, _) = t.spans(&chars);
+        assert_eq!(s[2].col, 8); // "bb" right-aligned to 10
+        assert_eq!(s[5].col, 14); // "cc" left at the next stop
     }
 
     #[test]
