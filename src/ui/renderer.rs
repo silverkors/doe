@@ -716,13 +716,24 @@ fn draw_output_row(screen: &mut Screen, layout: &Layout, app: &App, y: u16, role
         }
         OutputRole::Body => {
             screen.set(x0, y, dim('│'));
-            for (k, col) in (seg_start..seg_end).enumerate() {
-                let x = x0 + 2 + k as u16;
-                if x >= right {
-                    break;
+            // Tab-expanded layout, columns anchored to the line's own grid (the
+            // row's first visible char draws at the card's content origin).
+            let tabstops = app.active_buffer().tabstops();
+            let (spans, _) = tabstops.spans(chars);
+            let base = spans.get(seg_start).map(|s| s.col).unwrap_or(0);
+            'cells: for col in seg_start..seg_end.min(chars.len()) {
+                let ch = chars[col];
+                let sp = spans[col];
+                let is_tab = ch == '\t';
+                let leader = if is_tab { tabstops.leader_at(sp.col) } else { None };
+                for cell in 0..sp.width {
+                    let x = x0 as usize + 2 + (sp.col + cell - base);
+                    if x >= right as usize {
+                        break 'cells;
+                    }
+                    let dch = if is_tab { leader.unwrap_or(' ') } else { ch };
+                    screen.set(x as u16, y, Cell { ch: dch, fg: theme.foreground, bg: card_bg, bold: false, italic: true });
                 }
-                let ch = chars.get(col).copied().unwrap_or(' ');
-                screen.set(x, y, Cell { ch, fg: theme.foreground, bg: card_bg, bold: false, italic: true });
             }
             if right > x0 {
                 screen.set(right, y, dim('│'));
@@ -808,18 +819,32 @@ fn draw_callout_card_row(
                     raw >= seg_start && raw < seg_end
                 })
                 .collect();
-            let mut x = cx;
-            for g in seg {
-                if x >= right {
-                    break;
-                }
+            // Lay the glyphs out with tab expansion. Columns are measured from
+            // the card's content origin, so stops apply to the *visible*
+            // (concealed) text — a table inside a callout aligns at the same
+            // stops as one outside. Header rows start past the icon/type
+            // prefix, hence the non-zero start column.
+            let content_x = x0 + 2;
+            let start_col = (cx - content_x) as usize;
+            let tabstops = app.active_buffer().tabstops();
+            let chars: Vec<char> = seg.iter().map(|g| g.ch).collect();
+            let (spans, _) = tabstops.spans_from(&chars, start_col);
+            'glyphs: for (i, g) in seg.iter().enumerate() {
                 let (fg, bold) = if g.kind == StyleKind::Default {
                     (theme.foreground, header)
                 } else {
                     (theme.color_for(g.kind), g.bold)
                 };
-                screen.set(x, y, Cell { ch: g.ch, fg, bg: card_bg, bold, italic: g.italic });
-                x += 1;
+                let is_tab = g.ch == '\t';
+                let leader = if is_tab { tabstops.leader_at(spans[i].col) } else { None };
+                for cell in 0..spans[i].width {
+                    let x = content_x as usize + spans[i].col + cell;
+                    if x >= right as usize {
+                        break 'glyphs;
+                    }
+                    let ch = if is_tab { leader.unwrap_or(' ') } else { g.ch };
+                    screen.set(x as u16, y, Cell { ch, fg, bg: card_bg, bold, italic: g.italic });
+                }
             }
         }
     }

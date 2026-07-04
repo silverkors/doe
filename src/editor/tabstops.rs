@@ -125,8 +125,16 @@ impl TabStops {
     /// separator at (Decimal) the stop column. A tab always occupies at least
     /// one cell, so overflowing segments degrade gracefully by shifting right.
     pub fn spans(&self, chars: &[char]) -> (Vec<CellSpan>, usize) {
+        self.spans_from(chars, 0)
+    }
+
+    /// Like [`TabStops::spans`], but with the first char starting at
+    /// `start_col`. Used by preview cards (callouts, computed output) whose
+    /// content begins at an indent/prefix offset while stops stay anchored to
+    /// the same column grid.
+    pub fn spans_from(&self, chars: &[char], start_col: usize) -> (Vec<CellSpan>, usize) {
         let mut out = Vec::with_capacity(chars.len());
-        let mut col = 0;
+        let mut col = start_col;
         for (i, &c) in chars.iter().enumerate() {
             if c != '\t' {
                 out.push(CellSpan { col, width: 1 });
@@ -586,6 +594,19 @@ mod tests {
         let (s, _) = t.spans(&chars);
         assert_eq!(s[2].col, 8); // "bb" right-aligned to 10
         assert_eq!(s[5].col, 14); // "cc" left at the next stop
+    }
+
+    #[test]
+    fn spans_from_offsets_the_column_grid() {
+        // Same content, started 4 columns in (e.g. a card header prefix): the
+        // tab still reaches the *absolute* stop at 10.
+        let t = stops(vec![TabStop::left(10)]);
+        let chars: Vec<char> = "ab\tc".chars().collect();
+        let (s, total) = t.spans_from(&chars, 4);
+        assert_eq!(s[0].col, 4);
+        assert_eq!(s[2], CellSpan { col: 6, width: 4 }); // tab: 6 -> 10
+        assert_eq!(s[3].col, 10);
+        assert_eq!(total, 11);
     }
 
     #[test]
