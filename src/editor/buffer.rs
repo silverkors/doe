@@ -531,11 +531,14 @@ impl Buffer {
 
     /// Insert a tab at every cursor. With `insert_spaces` it expands to the
     /// number of spaces needed to reach the next tab stop *for that cursor's
-    /// column* (so custom stops are honoured); otherwise it stores a literal
-    /// `\t`, which reflows if the stops change. The `_tab_width` argument is kept
-    /// for call-site compatibility — the uniform fallback now lives on the
+    /// column*; otherwise it stores a literal `\t`, which reflows if the stops
+    /// change. Documents that declare explicit stops always store `\t` — spaces
+    /// would burn the layout in and (in previews that conceal markup) be
+    /// computed against the wrong column grid. The `_tab_width` argument is
+    /// kept for call-site compatibility — the uniform fallback now lives on the
     /// buffer's resolved [`TabStops`].
     pub fn insert_tab(&mut self, insert_spaces: bool, _tab_width: usize) {
+        let insert_spaces = insert_spaces && self.tabstops.explicit().is_empty();
         self.record(false);
         let edits = self
             .cursors
@@ -1234,6 +1237,20 @@ mod tests {
         assert_eq!(b.rope.slice(head - 2..head).to_string(), "bo");
         // Idempotent: adding the same column again does nothing.
         assert!(!b.add_tab_stop(16));
+    }
+
+    #[test]
+    fn explicit_stops_force_real_tabs_even_in_spaces_mode() {
+        let mut b = buf("---\ntabstops: [3]\n---\nx");
+        b.refresh_tabstops();
+        b.cursors = vec![Cursor::new(b.rope.len_chars())];
+        b.insert_tab(true, 4); // insert_spaces on, but the doc declares stops
+        assert!(b.rope.to_string().ends_with("x\t"));
+        // Without explicit stops, spaces mode still applies.
+        let mut b = buf("x");
+        b.cursors = vec![Cursor::new(1)];
+        b.insert_tab(true, 4);
+        assert_eq!(b.rope.to_string(), "x   "); // to the next uniform stop (4)
     }
 
     #[test]
