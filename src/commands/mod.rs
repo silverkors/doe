@@ -84,6 +84,11 @@ pub enum Command {
     CommandPalette,
     OpenBuffers,
 
+    // Tab stops (Word-style, stored in front matter)
+    SetTabStop(Option<usize>),
+    RemoveTabStop,
+    ClearTabStops,
+
     // View
     ToggleSoftWrap,
     Settings,

@@ -4,7 +4,7 @@
 //! consistent whether there is one caret or fifty.
 
 use super::cursor::Cursor;
-use super::tabstops::{self, TabStops};
+use super::tabstops::{self, TabStop, TabStops};
 use super::undo::{History, Snapshot};
 use crate::syntax::Language;
 use anyhow::{Context, Result};
@@ -127,6 +127,76 @@ impl Buffer {
     #[cfg(test)]
     pub fn set_tabstops_for_test(&mut self, stops: TabStops) {
         self.tabstops = stops;
+    }
+
+    /// Rewrite the document's explicit tab stops in its YAML front matter as one
+    /// undoable edit, preserving cursor positions (the edit is at the top of the
+    /// document, so body cursors just shift). The cached [`TabStops`] refreshes
+    /// via `mark_modified`.
+    pub fn set_tab_stops(&mut self, stops: Vec<TabStop>) {
+        let n = self.rope.len_chars().min(Self::FRONTMATTER_SCAN);
+        let head = self.rope.slice(0..n).to_string();
+        let (s, e, rep) = tabstops::splice_tabstops(&head, &stops);
+        if s == e && rep.is_empty() {
+            return; // nothing to do
+        }
+        self.record(false);
+        if e > s {
+            self.rope.remove(s..e);
+        }
+        if !rep.is_empty() {
+            self.rope.insert(s, &rep);
+        }
+        let rep_len = rep.chars().count();
+        let delta = rep_len as isize - (e - s) as isize;
+        let shift = |p: usize| -> usize {
+            if p <= s {
+                p
+            } else if p >= e {
+                (p as isize + delta) as usize
+            } else {
+                s + rep_len // landed inside the rewritten region
+            }
+        };
+        for c in &mut self.cursors {
+            c.head = shift(c.head);
+            c.anchor = shift(c.anchor);
+            c.goal_col = None;
+        }
+        self.mark_modified();
+        self.normalize();
+    }
+
+    /// Add a left tab stop at display column `col` (no-op if one already exists
+    /// there). Returns whether anything changed.
+    pub fn add_tab_stop(&mut self, col: usize) -> bool {
+        let mut stops = self.tabstops.explicit().to_vec();
+        if stops.iter().any(|s| s.col == col) {
+            return false;
+        }
+        stops.push(TabStop::left(col));
+        self.set_tab_stops(stops);
+        true
+    }
+
+    /// Remove the explicit stop nearest `col`. Returns the removed column, if any.
+    pub fn remove_tab_stop_near(&mut self, col: usize) -> Option<usize> {
+        let stops = self.tabstops.explicit();
+        let idx = (0..stops.len()).min_by_key(|&i| stops[i].col.abs_diff(col))?;
+        let removed = stops[idx].col;
+        let mut kept = stops.to_vec();
+        kept.remove(idx);
+        self.set_tab_stops(kept);
+        Some(removed)
+    }
+
+    /// Remove every explicit tab stop. Returns whether any existed.
+    pub fn clear_tab_stops(&mut self) -> bool {
+        if self.tabstops.explicit().is_empty() {
+            return false;
+        }
+        self.set_tab_stops(Vec::new());
+        true
     }
 
     /// Characters of `line` as a `Vec`, excluding the trailing newline.
@@ -1150,6 +1220,32 @@ mod tests {
         b.move_vertical(1, false); // line 2 "world" -> goal col 4 restored
         let (l, c) = b.pos_to_line_col(b.cursors[0].head);
         assert_eq!((l, c), (2, 4));
+    }
+
+    #[test]
+    fn add_tab_stop_writes_frontmatter_and_keeps_cursor() {
+        let mut b = buf("body\n");
+        b.cursors = vec![Cursor::new(2)]; // between 'o' and 'd'
+        assert!(b.add_tab_stop(16));
+        assert!(b.rope.to_string().starts_with("---\ntabstops: [16]\n---\n\n"));
+        assert_eq!(b.tabstops().explicit().iter().map(|s| s.col).collect::<Vec<_>>(), vec![16]);
+        // The cursor still sits between 'o' and 'd' in the body.
+        let head = b.cursors[0].head;
+        assert_eq!(b.rope.slice(head - 2..head).to_string(), "bo");
+        // Idempotent: adding the same column again does nothing.
+        assert!(!b.add_tab_stop(16));
+    }
+
+    #[test]
+    fn remove_and_clear_tab_stops() {
+        let mut b = buf("---\ntabstops: [8, 24, 40]\n---\nbody\n");
+        b.refresh_tabstops();
+        assert_eq!(b.remove_tab_stop_near(26), Some(24)); // nearest to 26
+        assert_eq!(b.tabstops().explicit().iter().map(|s| s.col).collect::<Vec<_>>(), vec![8, 40]);
+        assert!(b.clear_tab_stops());
+        assert!(b.tabstops().explicit().is_empty());
+        // Front matter is preserved (just the entry removed) and body intact.
+        assert!(b.rope.to_string().contains("body"));
     }
 
     #[test]

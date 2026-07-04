@@ -1108,6 +1108,39 @@ impl App {
                 self.active_buffer_mut().insert_tab(sp, tw);
                 edited = true;
             }
+            Command::SetTabStop(col) => {
+                let b = self.active_buffer_mut();
+                let col = col.unwrap_or_else(|| {
+                    let (line, off) = b.pos_to_line_col(b.primary_cursor().head);
+                    b.display_col(line, off)
+                });
+                if b.add_tab_stop(col) {
+                    self.set_status(format!("tab stop set at column {col}"));
+                    edited = true;
+                } else {
+                    self.set_status(format!("tab stop already at column {col}"));
+                }
+            }
+            Command::RemoveTabStop => {
+                let b = self.active_buffer_mut();
+                let (line, off) = b.pos_to_line_col(b.primary_cursor().head);
+                let col = b.display_col(line, off);
+                match b.remove_tab_stop_near(col) {
+                    Some(removed) => {
+                        self.set_status(format!("removed tab stop at column {removed}"));
+                        edited = true;
+                    }
+                    None => self.set_status("no tab stops to remove"),
+                }
+            }
+            Command::ClearTabStops => {
+                if self.active_buffer_mut().clear_tab_stops() {
+                    self.set_status("cleared all tab stops");
+                    edited = true;
+                } else {
+                    self.set_status("no tab stops to clear");
+                }
+            }
             Command::Undo => {
                 if !self.active_buffer_mut().undo() {
                     self.set_status("nothing to undo");

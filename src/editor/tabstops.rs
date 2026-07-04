@@ -260,9 +260,113 @@ fn parse_stop_item(item: &str) -> Option<TabStop> {
     Some(TabStop { col: col?, align, leader })
 }
 
+/// Render one stop back to its front-matter form: a bare column when it's a
+/// plain left stop, otherwise a `{col, align, leader}` map omitting defaults.
+fn serialize_stop(s: &TabStop) -> String {
+    let mut fields = Vec::new();
+    if s.align != TabAlign::Left {
+        let a = match s.align {
+            TabAlign::Right => "right",
+            TabAlign::Center => "center",
+            TabAlign::Decimal => "decimal",
+            TabAlign::Left => "left",
+        };
+        fields.push(format!("align: {a}"));
+    }
+    if let Some(c) = s.leader {
+        fields.push(format!("leader: \"{c}\""));
+    }
+    if fields.is_empty() {
+        s.col.to_string()
+    } else {
+        format!("{{col: {}, {}}}", s.col, fields.join(", "))
+    }
+}
+
+/// The `tabstops:` front-matter line for a set of stops (no trailing newline).
+pub fn serialize_line(stops: &[TabStop]) -> String {
+    let items: Vec<String> = stops.iter().map(serialize_stop).collect();
+    format!("tabstops: [{}]", items.join(", "))
+}
+
+/// Compute the edit that writes `stops` into `text`'s front matter, as a
+/// `(start, end, replacement)` triple in **char** offsets. An empty range with
+/// empty replacement means "no change needed". Handles three cases: replacing an
+/// existing `tabstops:` entry, inserting one into existing front matter, and
+/// creating front matter when the document has none. Passing an empty `stops`
+/// removes the entry (and never creates front matter).
+pub fn splice_tabstops(text: &str, stops: &[TabStop]) -> (usize, usize, String) {
+    // (char_start, char_len_including_newline, trimmed_content) per line.
+    let mut lines: Vec<(usize, usize, &str)> = Vec::new();
+    let mut off = 0;
+    for l in text.split_inclusive('\n') {
+        let trimmed = l.trim_end_matches(['\r', '\n']);
+        lines.push((off, l.chars().count(), trimmed));
+        off += l.chars().count();
+    }
+
+    let has_fm = lines.first().map(|(_, _, t)| *t == "---").unwrap_or(false);
+    let serialized = serialize_line(stops);
+
+    if !has_fm {
+        if stops.is_empty() {
+            return (0, 0, String::new());
+        }
+        return (0, 0, format!("---\n{serialized}\n---\n\n"));
+    }
+
+    // Closing fence line index.
+    let close = lines[1..]
+        .iter()
+        .position(|(_, _, t)| *t == "---" || *t == "...")
+        .map(|i| i + 1);
+    let close = match close {
+        Some(c) => c,
+        None => return (0, 0, String::new()), // malformed; leave it alone
+    };
+
+    // Find an existing `tabstops:` key within the front matter.
+    let ti = (1..close).find(|&i| lines[i].2.trim_start().starts_with("tabstops:"));
+    if let Some(ti) = ti {
+        let key_indent = lines[ti].2.len() - lines[ti].2.trim_start().len();
+        // Extend over any following indented block-list lines.
+        let mut end_line = ti + 1;
+        while end_line < close {
+            let t = lines[end_line].2;
+            let indent = t.len() - t.trim_start().len();
+            if t.trim().is_empty() || indent <= key_indent {
+                break;
+            }
+            end_line += 1;
+        }
+        let start = lines[ti].0;
+        let end = lines[end_line].0; // start of the first line after the value
+        if stops.is_empty() {
+            return (start, end, String::new()); // drop the entry entirely
+        }
+        return (start, end, format!("{serialized}\n"));
+    }
+
+    if stops.is_empty() {
+        return (0, 0, String::new());
+    }
+    // No key yet: insert right after the opening fence.
+    let pos = lines[1].0;
+    (pos, pos, format!("{serialized}\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn spliced(text: &str, stops: &[TabStop]) -> String {
+        let (s, e, rep) = splice_tabstops(text, stops);
+        let chars: Vec<char> = text.chars().collect();
+        let mut out: String = chars[..s].iter().collect();
+        out.push_str(&rep);
+        out.extend(&chars[e..]);
+        out
+    }
 
     #[test]
     fn uniform_next_col_matches_fixed_width() {
@@ -359,5 +463,51 @@ mod tests {
     fn unterminated_frontmatter_is_ignored() {
         let t = from_document("---\ntabstops: [8]\nno closing fence\n", 4);
         assert!(t.is_empty());
+    }
+
+    #[test]
+    fn serialize_plain_and_rich_stops() {
+        assert_eq!(serialize_line(&[TabStop::left(16), TabStop::left(32)]), "tabstops: [16, 32]");
+        let rich = TabStop { col: 56, align: TabAlign::Right, leader: Some('.') };
+        assert_eq!(serialize_line(&[rich]), "tabstops: [{col: 56, align: right, leader: \".\"}]");
+    }
+
+    #[test]
+    fn splice_creates_frontmatter_when_absent() {
+        let out = spliced("# Title\n\nbody\n", &[TabStop::left(16)]);
+        assert_eq!(out, "---\ntabstops: [16]\n---\n\n# Title\n\nbody\n");
+    }
+
+    #[test]
+    fn splice_inserts_into_existing_frontmatter() {
+        let out = spliced("---\ntitle: x\n---\nbody\n", &[TabStop::left(16)]);
+        assert_eq!(out, "---\ntabstops: [16]\ntitle: x\n---\nbody\n");
+    }
+
+    #[test]
+    fn splice_replaces_inline_entry() {
+        let out = spliced("---\ntabstops: [8]\ntitle: x\n---\nbody\n", &[TabStop::left(16), TabStop::left(40)]);
+        assert_eq!(out, "---\ntabstops: [16, 40]\ntitle: x\n---\nbody\n");
+    }
+
+    #[test]
+    fn splice_replaces_block_entry() {
+        let doc = "---\ntabstops:\n  - 8\n  - 24\ntitle: x\n---\nbody\n";
+        let out = spliced(doc, &[TabStop::left(16)]);
+        assert_eq!(out, "---\ntabstops: [16]\ntitle: x\n---\nbody\n");
+    }
+
+    #[test]
+    fn splice_empty_removes_entry_but_keeps_frontmatter() {
+        let out = spliced("---\ntabstops: [8]\ntitle: x\n---\nbody\n", &[]);
+        assert_eq!(out, "---\ntitle: x\n---\nbody\n");
+    }
+
+    #[test]
+    fn splice_roundtrips_through_parser() {
+        let stops = vec![TabStop::left(12), TabStop { col: 40, align: TabAlign::Right, leader: Some('.') }];
+        let out = spliced("body only\n", &stops);
+        let parsed = from_document(&out, 4);
+        assert_eq!(parsed.explicit(), stops.as_slice());
     }
 }
