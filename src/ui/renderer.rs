@@ -142,7 +142,11 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
             prev_prefix = 0;
             if let Some(PreviewRole::Header(_) | PreviewRole::Body(_)) = &loaded_preview {
                 let ltext = line_text(buf, vr.line);
-                let after = ltext.trim_start().strip_prefix('>').unwrap_or("").trim_start();
+                // Strip the quote marker and only the single conventional space
+                // after it — the body's own leading whitespace is content (a
+                // leading tab indents to its stop, e.g. psalm verse halves).
+                let marker = ltext.trim_start().strip_prefix('>').unwrap_or("");
+                let after = marker.strip_prefix(' ').unwrap_or(marker);
                 let content = if matches!(loaded_preview, Some(PreviewRole::Header(_))) {
                     after.splitn(2, ']').nth(1).unwrap_or("").trim_start()
                 } else {
