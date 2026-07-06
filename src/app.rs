@@ -84,6 +84,11 @@ pub struct App {
     disk_warned: bool,
     /// Last mouse row during a drag, for touch/drag-to-scroll.
     last_drag_row: u16,
+    /// Per-file cursor memory (restored when a file is reopened).
+    positions: crate::files::positions::PositionStore,
+    /// Centre the viewport on the cursor at the first real resize — set when a
+    /// remembered position was restored (terminal size is unknown in `new`).
+    pending_center: bool,
 }
 
 /// Buffers larger than this are not backed up (autosaving a huge file on every
@@ -165,6 +170,16 @@ impl App {
         let palette = Palette::new(&config.config_dir);
         let file_picker = FilePicker::new(&config.config_dir);
         let trust = crate::eval::trust::TrustStore::load(&config.config_dir);
+        let positions = crate::files::positions::PositionStore::new(&config.config_dir);
+
+        // Restore each file's remembered cursor position (clamped to contents).
+        let mut restored_any = false;
+        for b in &mut buffers {
+            if let Some((line, col)) = b.path.as_deref().and_then(|p| positions.get(p)) {
+                b.restore_position(line, col);
+                restored_any = true;
+            }
+        }
         let mut app = App {
             config,
             buffers,
@@ -198,6 +213,8 @@ impl App {
             next_recovery_id,
             disk_warned: false,
             last_drag_row: 0,
+            positions,
+            pending_center: restored_any,
         };
         app.sync_tab_width();
 
@@ -250,6 +267,11 @@ impl App {
                 path: buf.path.as_ref().map(|p| p.to_string_lossy().into_owned()),
                 has_backup,
             });
+            // Keep the per-file cursor memory fresh (no-op when unchanged).
+            if let Some(p) = buf.path.clone() {
+                let (line, col) = buf.pos_to_line_col(buf.primary_cursor().head);
+                self.positions.record(&p, line, col);
+            }
         }
         self.recovery.write_session(&Session { active, buffers: entries });
     }
@@ -265,7 +287,39 @@ impl App {
     pub fn resize(&mut self, w: u16, h: u16) {
         self.width = w;
         self.height = h;
+        if self.pending_center {
+            self.pending_center = false;
+            self.center_cursor();
+        }
         self.ensure_cursor_visible();
+    }
+
+    /// Scroll so the primary cursor's line sits mid-viewport (used when a
+    /// remembered position is restored, so the context around it is visible).
+    fn center_cursor(&mut self) {
+        let half = (self.text_rows() / 2).max(1);
+        if self.soft_wrap() {
+            let width = self.text_cols().max(1);
+            let buf = self.active_buffer();
+            let (mut l, mut s, _) = wrap::vpos_of(buf, buf.primary_cursor().head, width);
+            for _ in 0..half {
+                match wrap::prev_visual(buf, l, s, width) {
+                    Some((nl, ns)) => {
+                        l = nl;
+                        s = ns;
+                    }
+                    None => break,
+                }
+            }
+            self.top_line = l;
+            self.top_subrow = s;
+        } else {
+            let (line, _) = {
+                let b = self.active_buffer();
+                b.pos_to_line_col(b.primary_cursor().head)
+            };
+            self.top_line = line.saturating_sub(half);
+        }
     }
 
     /// Recompute whether the top visible line is inside a fenced code block, by
@@ -1390,6 +1444,16 @@ impl App {
     fn shutdown(&mut self, discard: bool) {
         self.palette.save();
         self.file_picker.save();
+        // Remember every open file's cursor position for the next launch
+        // (independent of whether unsaved changes are kept or discarded).
+        for i in 0..self.buffers.len() {
+            let buf = &self.buffers[i];
+            if let Some(p) = buf.path.clone() {
+                let (line, col) = buf.pos_to_line_col(buf.primary_cursor().head);
+                self.positions.record(&p, line, col);
+            }
+        }
+        self.positions.save();
         if discard {
             self.recovery.clear();
         } else {
@@ -1454,11 +1518,20 @@ impl App {
             Ok(mut b) => {
                 b.recovery_id = self.fresh_recovery_id();
                 b.set_tab_width(self.config.settings.tab_width);
+                // Continue where you left off in this file, with context around
+                // the cursor visible.
+                let remembered = self.positions.get(&path);
+                if let Some((line, col)) = remembered {
+                    b.restore_position(line, col);
+                }
                 self.buffers.push(b);
                 self.active = self.buffers.len() - 1;
                 self.top_line = 0;
                 self.top_subrow = 0;
                 self.left_col = 0;
+                if remembered.is_some() {
+                    self.center_cursor();
+                }
                 self.set_status(format!("opened {}", files::display_path(&path)));
                 self.notify(Event::OpenFile(path));
                 self.ensure_cursor_visible();
@@ -1772,6 +1845,15 @@ impl App {
 
     /// Actually remove the active buffer (caller has resolved any unsaved state).
     fn do_close_buffer(&mut self) {
+        // Remember the closed buffer's cursor for its next open.
+        {
+            let buf = &self.buffers[self.active];
+            if let Some(p) = buf.path.clone() {
+                let (line, col) = buf.pos_to_line_col(buf.primary_cursor().head);
+                self.positions.record(&p, line, col);
+                self.positions.save();
+            }
+        }
         if self.buffers.len() == 1 {
             let mut b = Buffer::empty();
             b.recovery_id = self.fresh_recovery_id();

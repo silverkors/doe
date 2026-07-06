@@ -359,10 +359,17 @@ impl Buffer {
         (line, col)
     }
 
+    /// Place a single cursor at `(line, char-column)`, clamped to the current
+    /// contents. Used to restore the remembered position when reopening a file.
+    pub fn restore_position(&mut self, line: usize, col: usize) {
+        let pos = self.line_col_to_pos(line, col);
+        self.cursors = vec![Cursor::new(pos)];
+        self.primary = 0;
+    }
+
     /// Char position for a `(line, char-column)` pair. Note this is a *char*
     /// column, not a display column — use [`Buffer::char_off_for_col`] for
     /// tab-aware (display-column) mapping.
-    #[allow(dead_code)]
     pub fn line_col_to_pos(&self, line: usize, col: usize) -> usize {
         let last = self.rope.len_lines().saturating_sub(1);
         let line = line.min(last);

@@ -64,6 +64,9 @@ doe a.md b.rs c.toml   # open several files as buffers
   (`:ruler` / "Toggle Tab Ruler"): click sets a stop, clicking a stop cycles
   L → R → C → D, right-click removes. Without explicit stops, tabs fall back
   to uniform `tab_width` columns.
+- **Continue where you left off** — DOE remembers the cursor position of every
+  file you've opened (`positions.toml`) and restores it on reopen, with the
+  viewport centred on it.
 - **Never lose work** — an invisible autosave continuously mirrors open buffers
   to a recovery store, so you can quit without saving (no prompt): relaunching
   reopens your files *with* their unsaved changes (including never-saved
