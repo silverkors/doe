@@ -165,8 +165,60 @@ impl TabStops {
         (out, col)
     }
 
+    /// Like [`TabStops::spans`], but tabs resolve their stops against a
+    /// *visible-column grid*: chars before `content_start` (a marker prefix
+    /// like `> `) and chars whose `vis[i - content_start]` is `false`
+    /// (concealed markup like `**`) still occupy one screen cell each, but do
+    /// not advance the grid. A raw callout line thus gets exactly the tab
+    /// widths its preview shows — moving the cursor in only reveals the
+    /// markup, it never changes the gaps. Alignment lookahead likewise
+    /// measures only the visible chars of the following segment.
+    pub fn spans_concealed(&self, chars: &[char], content_start: usize, vis: &[bool]) -> (Vec<CellSpan>, usize) {
+        let visible = |i: usize| {
+            i >= content_start && vis.get(i - content_start).copied().unwrap_or(true)
+        };
+        let mut out = Vec::with_capacity(chars.len());
+        let mut screen = 0; // output cell column
+        let mut grid = 0; // visible-content column (what stops apply to)
+        for (i, &c) in chars.iter().enumerate() {
+            if c == '\t' && i >= content_start {
+                let seg_end = chars[i + 1..]
+                    .iter()
+                    .position(|&c| c == '\t')
+                    .map_or(chars.len(), |p| i + 1 + p);
+                let seg: Vec<char> =
+                    (i + 1..seg_end).filter(|&j| visible(j)).map(|j| chars[j]).collect();
+                let (stop_col, align) = self.stop_after(grid);
+                let target = match align {
+                    TabAlign::Left => stop_col,
+                    TabAlign::Right => stop_col.saturating_sub(seg.len()),
+                    TabAlign::Center => stop_col.saturating_sub(seg.len() / 2),
+                    TabAlign::Decimal => {
+                        let int_len =
+                            seg.iter().position(|&c| c == '.' || c == ',').unwrap_or(seg.len());
+                        stop_col.saturating_sub(int_len)
+                    }
+                };
+                let w = target.saturating_sub(grid).max(1);
+                out.push(CellSpan { col: screen, width: w });
+                screen += w;
+                grid += w;
+            } else {
+                out.push(CellSpan { col: screen, width: 1 });
+                screen += 1;
+                if visible(i) {
+                    grid += 1;
+                }
+            }
+        }
+        (out, screen)
+    }
+
     /// Display column of the char at offset `upto` within `chars` (i.e. the
     /// column the cursor sits at when placed before `chars[upto]`).
+    /// Line-oriented callers should prefer `Buffer::display_col`, which also
+    /// applies callout concealment.
+    #[allow(dead_code)]
     pub fn char_to_col(&self, chars: &[char], upto: usize) -> usize {
         let (spans, total) = self.spans(chars);
         if upto >= chars.len() {
@@ -177,12 +229,15 @@ impl TabStops {
     }
 
     /// Total display width of a whole line.
+    #[allow(dead_code)]
     pub fn line_width(&self, chars: &[char]) -> usize {
         self.spans(chars).1
     }
 
     /// Char offset nearest the target display `col`. A click landing inside a
-    /// tab's whitespace snaps to whichever edge is closer.
+    /// tab's whitespace snaps to whichever edge is closer. Line-oriented
+    /// callers should prefer `Buffer::char_off_for_col`.
+    #[allow(dead_code)]
     pub fn col_to_char(&self, chars: &[char], target: usize) -> usize {
         let (spans, _) = self.spans(chars);
         for (i, s) in spans.iter().enumerate() {

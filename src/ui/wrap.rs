@@ -29,7 +29,7 @@ pub fn segments(buf: &Buffer, line: usize, width: usize) -> Vec<(usize, usize)> 
     // One layout pass for the whole line; spans hold *absolute* display columns,
     // so tab stops stay anchored to the document's layout rather than to each
     // wrapped row, and a row's width is just a difference of span columns.
-    let (spans, _) = buf.tabstops().spans(&chars);
+    let (spans, _) = buf.line_spans(line);
 
     let mut segs = Vec::new();
     let mut seg_start = 0; // char index where the current visual row begins

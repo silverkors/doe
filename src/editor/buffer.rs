@@ -206,20 +206,104 @@ impl Buffer {
         self.rope.slice(start..start + len).chars().collect()
     }
 
+    /// The display layout of `line`: per-char cell spans plus total width.
+    /// This is the single source for on-screen geometry — rendering, cursor,
+    /// mouse and soft wrap all agree because they all come here.
+    ///
+    /// Markdown callout lines lay out on the *visible-column grid*: the `> `
+    /// marker and concealed markup (`**`, `[!type]`, `\`) occupy screen cells
+    /// but don't count toward tab-stop columns, so the raw view gets exactly
+    /// the tab widths its preview card shows.
+    pub fn line_spans(&self, line: usize) -> (Vec<tabstops::CellSpan>, usize) {
+        let chars = self.line_chars(line);
+        if self.language == Language::Markdown {
+            if let Some(cstart) = self.callout_content_start(line, &chars) {
+                let content: String = chars[cstart.min(chars.len())..].iter().collect();
+                let vis = crate::syntax::markdown::visible_mask(&content);
+                return self.tabstops.spans_concealed(&chars, cstart, &vis);
+            }
+        }
+        self.tabstops.spans(&chars)
+    }
+
     /// Display column of a char offset within `line` (tab-aware).
     pub fn display_col(&self, line: usize, off: usize) -> usize {
-        self.tabstops.char_to_col(&self.line_chars(line), off)
+        let (spans, total) = self.line_spans(line);
+        if off >= spans.len() {
+            total
+        } else {
+            spans[off].col
+        }
     }
 
     /// Char offset within `line` nearest the given display column (tab-aware).
+    /// A position inside a tab's whitespace snaps to the nearer edge.
     pub fn char_off_for_col(&self, line: usize, col: usize) -> usize {
-        self.tabstops.col_to_char(&self.line_chars(line), col)
+        let (spans, _) = self.line_spans(line);
+        for (i, s) in spans.iter().enumerate() {
+            if col < s.col + s.width {
+                return if col.saturating_sub(s.col) < s.width.div_ceil(2) { i } else { i + 1 };
+            }
+        }
+        spans.len()
     }
 
     /// Total display width of `line` (tab-aware).
     #[allow(dead_code)] // used by the tab-stop ruler UI (later step)
     pub fn line_display_width(&self, line: usize) -> usize {
-        self.tabstops.line_width(&self.line_chars(line))
+        self.line_spans(line).1
+    }
+
+    /// If `line` belongs to a callout block (a run of `>` lines whose first
+    /// line is a `> [!type]` header), the char offset where its *preview
+    /// content* starts: past `>` and one conventional space, and for the
+    /// header line also past the `[!type]` marker. Mirrors the renderer's
+    /// block detection so geometry and painting agree.
+    fn callout_content_start(&self, line: usize, chars: &[char]) -> Option<usize> {
+        /// Bound the upward scan so pathological quote runs stay cheap.
+        const SCAN_UP: usize = 512;
+        let quote_marker = |chars: &[char]| -> Option<usize> {
+            let i = chars.iter().position(|c| !c.is_whitespace())?;
+            (chars[i] == '>').then_some(i)
+        };
+        let marker = quote_marker(chars)?;
+        let mut top = line;
+        while top > 0 && line - top < SCAN_UP {
+            let above = self.line_chars(top - 1);
+            if quote_marker(&above).is_none() {
+                break;
+            }
+            top -= 1;
+        }
+        // The block's first line must be a callout header: `> [!type…]`.
+        let is_header_line = |chars: &[char]| -> Option<usize> {
+            let m = quote_marker(chars)?;
+            let mut i = m + 1;
+            if chars.get(i) == Some(&' ') {
+                i += 1;
+            }
+            if chars.get(i) != Some(&'[') || chars.get(i + 1) != Some(&'!') {
+                return None;
+            }
+            let close = (i + 2..chars.len()).find(|&j| chars[j] == ']')?;
+            (close > i + 2).then_some(close + 1)
+        };
+        if line == top {
+            // Header: content starts after `[!type]` and one space.
+            let mut i = is_header_line(chars)?;
+            if chars.get(i) == Some(&' ') {
+                i += 1;
+            }
+            Some(i)
+        } else {
+            is_header_line(&self.line_chars(top))?;
+            // Body: content starts after `>` and one conventional space.
+            let mut i = marker + 1;
+            if chars.get(i) == Some(&' ') {
+                i += 1;
+            }
+            Some(i)
+        }
     }
 
     /// Replace the entire contents (used to restore recovered/unsaved content).
@@ -1237,6 +1321,37 @@ mod tests {
         assert_eq!(b.rope.slice(head - 2..head).to_string(), "bo");
         // Idempotent: adding the same column again does nothing.
         assert!(!b.add_tab_stop(16));
+    }
+
+    #[test]
+    fn callout_raw_tabs_match_preview_grid() {
+        // stops [3]; a callout with markup before one tab and none before the other.
+        let mut b = buf("---\ntabstops: [3]\n---\n> [!note] T\n> **II**\tTy\n> \tsom\n");
+        b.language = Language::Markdown;
+        b.refresh_tabstops();
+        // `> **II**\tTy`: tab (index 8) sits at *visible* col 2 ("II") -> stop 3
+        // -> width 1, exactly like the preview card.
+        let (spans, _) = b.line_spans(4);
+        assert_eq!(spans[8].width, 1);
+        // `> \tsom`: tab (index 2) at visible col 0 -> stop 3 -> width 3.
+        let (spans, _) = b.line_spans(5);
+        assert_eq!(spans[2].width, 3);
+        // Concealed markup still occupies one screen cell each (raw shows it).
+        let (spans, _) = b.line_spans(4);
+        assert_eq!(spans[2].col, 2); // first '*' right after "> "
+        assert_eq!(spans[8].col, 8); // tab's screen cell after "> **II**"
+    }
+
+    #[test]
+    fn plain_quote_keeps_absolute_grid() {
+        // A blockquote without a callout header is not previewed, so it keeps
+        // the plain absolute-column layout.
+        let mut b = buf("> quote\there");
+        b.language = Language::Markdown;
+        b.refresh_tabstops();
+        let (spans, _) = b.line_spans(0);
+        // tab at raw col 7 -> uniform stop 8 -> width 1.
+        assert_eq!(spans[7].width, 1);
     }
 
     #[test]

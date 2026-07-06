@@ -158,7 +158,7 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
             }
             let text: String = buf.rope.slice(line_start..line_start + line_len).to_string();
             chars = text.chars().collect();
-            spans = buf.tabstops().spans(&chars).0;
+            spans = buf.line_spans(vr.line).0;
             kinds = vec![StyleKind::Default; line_len];
             bolds = vec![false; line_len];
             itals = vec![false; line_len];

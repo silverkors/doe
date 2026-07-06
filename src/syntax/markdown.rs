@@ -213,10 +213,27 @@ pub struct InlineGlyph {
 /// `<font ...>_(x)_</font>` → "(x)" (italic).
 pub fn rendered_inline(text: &str) -> Vec<InlineGlyph> {
     let chars: Vec<char> = text.chars().collect();
+    let (kind, bold, ital) = inline_kinds(&chars);
+    (0..chars.len())
+        .filter(|&c| !is_concealed(kind[c]))
+        .map(|c| InlineGlyph { ch: chars[c], kind: kind[c], bold: bold[c], italic: ital[c], index: c })
+        .collect()
+}
+
+/// Per-char visibility of `text` under preview concealment: `true` where the
+/// char is emitted by [`rendered_inline`], `false` where markup is concealed.
+/// Used to lay out raw callout lines on the same column grid as their preview.
+pub fn visible_mask(text: &str) -> Vec<bool> {
+    let chars: Vec<char> = text.chars().collect();
+    let (kind, _, _) = inline_kinds(&chars);
+    kind.into_iter().map(|k| !is_concealed(k)).collect()
+}
+
+/// Style classification of every char of a line's inline content.
+fn inline_kinds(chars: &[char]) -> (Vec<StyleKind>, Vec<bool>, Vec<bool>) {
     let n = chars.len();
     let mut spans = Vec::new();
-    inline(&chars, 0, n, &mut spans, StyleKind::Default);
-
+    inline(chars, 0, n, &mut spans, StyleKind::Default);
     let mut kind = vec![StyleKind::Default; n];
     let mut bold = vec![false; n];
     let mut ital = vec![false; n];
@@ -227,11 +244,7 @@ pub fn rendered_inline(text: &str) -> Vec<InlineGlyph> {
             ital[c] = s.italic;
         }
     }
-
-    (0..n)
-        .filter(|&c| !is_concealed(kind[c]))
-        .map(|c| InlineGlyph { ch: chars[c], kind: kind[c], bold: bold[c], italic: ital[c], index: c })
-        .collect()
+    (kind, bold, ital)
 }
 
 fn is_concealed(k: StyleKind) -> bool {
