@@ -28,6 +28,8 @@ pub enum Command {
     InsertNewline,
     Backspace,
     Delete,
+    DeleteWordLeft,
+    DeleteWordRight,
     Undo,
     Redo,
     Tab,

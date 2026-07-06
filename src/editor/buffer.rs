@@ -642,6 +642,59 @@ impl Buffer {
         self.apply_edits(edits);
     }
 
+    /// Delete from the previous word boundary to each cursor (Alt/Ctrl+Backspace).
+    /// A cursor with a selection deletes the selection instead.
+    pub fn delete_word_left(&mut self) {
+        self.record(false);
+        let mut ranges: Vec<(usize, usize)> = self
+            .cursors
+            .iter()
+            .map(|c| {
+                if c.has_selection() {
+                    c.range()
+                } else {
+                    (self.word_boundary_left(c.head), c.head)
+                }
+            })
+            .collect();
+        Self::clip_overlaps(&mut ranges);
+        let edits =
+            ranges.into_iter().map(|(s, e)| Edit { start: s, end: e, text: String::new() }).collect();
+        self.apply_edits(edits);
+    }
+
+    /// Delete from each cursor to the next word boundary (Alt/Ctrl+Delete).
+    pub fn delete_word_right(&mut self) {
+        self.record(false);
+        let mut ranges: Vec<(usize, usize)> = self
+            .cursors
+            .iter()
+            .map(|c| {
+                if c.has_selection() {
+                    c.range()
+                } else {
+                    (c.head, self.word_boundary_right(c.head))
+                }
+            })
+            .collect();
+        Self::clip_overlaps(&mut ranges);
+        let edits =
+            ranges.into_iter().map(|(s, e)| Edit { start: s, end: e, text: String::new() }).collect();
+        self.apply_edits(edits);
+    }
+
+    /// Clip overlapping delete ranges (two cursors in the same word) so each
+    /// char is deleted exactly once. Preserves index order for `apply_edits`.
+    fn clip_overlaps(ranges: &mut [(usize, usize)]) {
+        let mut order: Vec<usize> = (0..ranges.len()).collect();
+        order.sort_by_key(|&i| ranges[i].0);
+        let mut prev_end = 0;
+        for &i in &order {
+            ranges[i].0 = ranges[i].0.max(prev_end).min(ranges[i].1);
+            prev_end = prev_end.max(ranges[i].1);
+        }
+    }
+
     // --- movement ----------------------------------------------------------
 
     fn set_head(c: &mut Cursor, pos: usize, extend: bool) {
@@ -1282,6 +1335,33 @@ mod tests {
         b.cursors = vec![Cursor::new(2), Cursor::new(5), Cursor::new(8)];
         b.backspace();
         assert_eq!(b.rope.to_string(), "a\nb\nc");
+    }
+
+    #[test]
+    fn delete_word_left_removes_previous_word() {
+        let mut b = buf("hej världen fina");
+        b.cursors = vec![Cursor::new(11)]; // after "världen"
+        b.delete_word_left();
+        assert_eq!(b.rope.to_string(), "hej  fina");
+        assert_eq!(b.cursors[0].head, 4);
+        // Trailing whitespace before the cursor is eaten together with the word.
+        let mut b = buf("hej världen ");
+        b.cursors = vec![Cursor::new(12)]; // at end, after the space
+        b.delete_word_left();
+        assert_eq!(b.rope.to_string(), "hej ");
+    }
+
+    #[test]
+    fn delete_word_right_and_multi_cursor_clip() {
+        let mut b = buf("hej världen");
+        b.cursors = vec![Cursor::new(0)];
+        b.delete_word_right();
+        assert_eq!(b.rope.to_string(), " världen");
+        // Two cursors inside the same word: ranges clip, the word deletes once.
+        let mut b = buf("abcdef x");
+        b.cursors = vec![Cursor::new(3), Cursor::new(6)];
+        b.delete_word_left();
+        assert_eq!(b.rope.to_string(), " x");
     }
 
     #[test]

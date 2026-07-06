@@ -1183,6 +1183,14 @@ impl App {
                 self.active_buffer_mut().delete();
                 edited = true;
             }
+            Command::DeleteWordLeft => {
+                self.active_buffer_mut().delete_word_left();
+                edited = true;
+            }
+            Command::DeleteWordRight => {
+                self.active_buffer_mut().delete_word_right();
+                edited = true;
+            }
             Command::Tab => {
                 let (sp, tw) = (self.config.settings.insert_spaces, self.config.settings.tab_width);
                 self.active_buffer_mut().insert_tab(sp, tw);

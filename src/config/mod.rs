@@ -265,6 +265,11 @@ fn default_keybindings() -> Keybindings {
         ("enter", "newline"),
         ("backspace", "backspace"),
         ("delete", "delete"),
+        // Delete previous/next word: Alt on mac, Ctrl on PC — both bound.
+        ("alt-backspace", "delete_word_left"),
+        ("ctrl-backspace", "delete_word_left"),
+        ("alt-delete", "delete_word_right"),
+        ("ctrl-delete", "delete_word_right"),
         ("tab", "tab"),
     ];
 

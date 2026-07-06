@@ -34,6 +34,8 @@ pub fn catalog() -> &'static [PaletteAction] {
         PaletteAction { command: "clear_extra_cursors", title: "Clear Extra Cursors", hint: "Esc" },
         PaletteAction { command: "undo", title: "Undo", hint: "Ctrl+Z" },
         PaletteAction { command: "redo", title: "Redo", hint: "Ctrl+Y" },
+        PaletteAction { command: "delete_word_left", title: "Delete Previous Word", hint: "Alt/Ctrl+Backspace" },
+        PaletteAction { command: "delete_word_right", title: "Delete Next Word", hint: "Alt/Ctrl+Delete" },
         PaletteAction { command: "toggle_comment", title: "Toggle Line Comment", hint: "Ctrl+/" },
         PaletteAction { command: "toggle_soft_wrap", title: "Toggle Soft Wrap", hint: "Alt+Z" },
         PaletteAction { command: "settings", title: "Settings…", hint: "Ctrl+," },

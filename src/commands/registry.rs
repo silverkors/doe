@@ -31,6 +31,8 @@ pub fn parse(input: &str) -> Option<Command> {
         "newline" => Command::InsertNewline,
         "backspace" => Command::Backspace,
         "delete" => Command::Delete,
+        "delete_word_left" | "delete_word" => Command::DeleteWordLeft,
+        "delete_word_right" => Command::DeleteWordRight,
 
         "toggle_bold" => Command::ToggleBold,
         "toggle_italic" => Command::ToggleItalic,
