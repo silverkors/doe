@@ -94,6 +94,7 @@ pub enum Command {
 
     // View
     ToggleSoftWrap,
+    Help,
     Settings,
     CalloutSettings,
     ImportObsidianCallouts,

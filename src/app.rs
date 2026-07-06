@@ -86,6 +86,8 @@ pub struct App {
     last_drag_row: u16,
     /// Per-file cursor memory (restored when a file is reopened).
     positions: crate::files::positions::PositionStore,
+    /// Keyboard-shortcut overview panel (F1).
+    pub help_panel: crate::ui::help::HelpPanel,
     /// Centre the viewport on the cursor at the first real resize — set when a
     /// remembered position was restored (terminal size is unknown in `new`).
     pending_center: bool,
@@ -214,6 +216,7 @@ impl App {
             disk_warned: false,
             last_drag_row: 0,
             positions,
+            help_panel: crate::ui::help::HelpPanel::default(),
             pending_center: restored_any,
         };
         app.sync_tab_width();
@@ -518,6 +521,10 @@ impl App {
     // --- input -------------------------------------------------------------
 
     pub fn handle_key(&mut self, ev: KeyEvent) {
+        if self.help_panel.open {
+            self.handle_help_key(ev);
+            return;
+        }
         if self.settings_panel.open {
             self.handle_settings_key(ev);
             return;
@@ -771,6 +778,23 @@ impl App {
     }
 
     /// Key handling while the settings panel is open.
+    /// Key handling while the keyboard-shortcut overview is open.
+    fn handle_help_key(&mut self, ev: KeyEvent) {
+        use crossterm::event::KeyCode::*;
+        let page = crate::ui::help::page_rows(self);
+        let total = crate::ui::help::rows(self).len();
+        match ev.code {
+            Esc | Enter | F(1) | Char('q') => self.help_panel.close(),
+            Up => self.help_panel.scroll_by(-1, page, total),
+            Down => self.help_panel.scroll_by(1, page, total),
+            PageUp => self.help_panel.scroll_by(-(page as isize), page, total),
+            PageDown => self.help_panel.scroll_by(page as isize, page, total),
+            Home => self.help_panel.scroll = 0,
+            End => self.help_panel.scroll_by(total as isize, page, total),
+            _ => {}
+        }
+    }
+
     fn handle_settings_key(&mut self, ev: KeyEvent) {
         use crossterm::event::KeyCode::*;
         match ev.code {
@@ -1394,6 +1418,7 @@ impl App {
             Command::CommandPalette => self.open_modal(ModalTab::Commands),
             Command::OpenBuffers => self.open_modal(ModalTab::Buffers),
 
+            Command::Help => self.help_panel.open(),
             Command::Settings => self.settings_panel.open(),
             Command::CalloutSettings => self.callout_panel.open(),
             Command::ImportObsidianCallouts => self.import_obsidian_callouts(),

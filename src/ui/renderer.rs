@@ -329,6 +329,9 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     // --- overlays (drawn on top of everything) ----------------------------
     let overlay_cursor = if app.modal_open {
         super::modal::render(screen, app)
+    } else if app.help_panel.open {
+        super::help::render(screen, app);
+        None
     } else if app.settings_panel.open {
         super::settings::render(screen, app);
         None
@@ -343,7 +346,7 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     };
 
     // --- final cursor position --------------------------------------------
-    screen.cursor = if app.settings_panel.open || app.callout_panel.open || app.symbol_panel.open {
+    screen.cursor = if app.settings_panel.open || app.callout_panel.open || app.symbol_panel.open || app.help_panel.open {
         None // navigated with arrows; no text caret
     } else if app.modal_open {
         overlay_cursor

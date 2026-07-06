@@ -38,6 +38,7 @@ pub fn catalog() -> &'static [PaletteAction] {
         PaletteAction { command: "delete_word_right", title: "Delete Next Word", hint: "Alt/Ctrl+Delete" },
         PaletteAction { command: "toggle_comment", title: "Toggle Line Comment", hint: "Ctrl+/" },
         PaletteAction { command: "toggle_soft_wrap", title: "Toggle Soft Wrap", hint: "Alt+Z" },
+        PaletteAction { command: "help", title: "Keyboard Shortcuts…", hint: "F1" },
         PaletteAction { command: "settings", title: "Settings…", hint: "Ctrl+," },
         PaletteAction { command: "callout_settings", title: "Callout Styles…", hint: "" },
         PaletteAction { command: "import_callouts", title: "Import Callouts from Obsidian…", hint: "" },

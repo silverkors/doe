@@ -99,6 +99,7 @@ pub fn parse(input: &str) -> Option<Command> {
         "command_palette" => Command::CommandPalette,
         "open_buffers" | "buffers" => Command::OpenBuffers,
         "toggle_soft_wrap" => Command::ToggleSoftWrap,
+        "help" | "keys" | "shortcuts" | "keybindings" => Command::Help,
         "settings" | "preferences" => Command::Settings,
         "callout_settings" | "callouts" => Command::CalloutSettings,
         "import_callouts" | "import_obsidian_callouts" => Command::ImportObsidianCallouts,

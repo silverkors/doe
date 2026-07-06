@@ -205,7 +205,7 @@ fn config_base_dir() -> PathBuf {
 
 /// Built-in keybindings so DOE is usable out of the box. DOE is modeless, so
 /// there is a single `global` binding context (no Vim-style modes).
-fn default_keybindings() -> Keybindings {
+pub fn default_keybindings() -> Keybindings {
     let binds: &[(&str, &str)] = &[
         ("ctrl-p", "command_palette"),
         ("ctrl-t", "open_buffers"),
@@ -259,6 +259,7 @@ fn default_keybindings() -> Keybindings {
         ("shift-right", "extend_right"),
         ("shift-up", "extend_up"),
         ("shift-down", "extend_down"),
+        ("f1", "help"),
         ("f3", "find_next"),
         ("shift-f3", "find_prev"),
         ("esc", "clear_extra_cursors"),
