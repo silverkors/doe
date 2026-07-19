@@ -28,6 +28,8 @@ pub enum Command {
     InsertNewline,
     Backspace,
     Delete,
+    DeleteWordLeft,
+    DeleteWordRight,
     Undo,
     Redo,
     Tab,
@@ -84,8 +86,15 @@ pub enum Command {
     CommandPalette,
     OpenBuffers,
 
+    // Tab stops (Word-style, stored in front matter)
+    SetTabStop(Option<usize>),
+    RemoveTabStop,
+    ClearTabStops,
+    ToggleTabRuler,
+
     // View
     ToggleSoftWrap,
+    Help,
     Settings,
     CalloutSettings,
     ImportObsidianCallouts,

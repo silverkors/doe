@@ -84,6 +84,13 @@ pub struct App {
     disk_warned: bool,
     /// Last mouse row during a drag, for touch/drag-to-scroll.
     last_drag_row: u16,
+    /// Per-file cursor memory (restored when a file is reopened).
+    positions: crate::files::positions::PositionStore,
+    /// Keyboard-shortcut overview panel (F1).
+    pub help_panel: crate::ui::help::HelpPanel,
+    /// Centre the viewport on the cursor at the first real resize — set when a
+    /// remembered position was restored (terminal size is unknown in `new`).
+    pending_center: bool,
 }
 
 /// Buffers larger than this are not backed up (autosaving a huge file on every
@@ -165,6 +172,16 @@ impl App {
         let palette = Palette::new(&config.config_dir);
         let file_picker = FilePicker::new(&config.config_dir);
         let trust = crate::eval::trust::TrustStore::load(&config.config_dir);
+        let positions = crate::files::positions::PositionStore::new(&config.config_dir);
+
+        // Restore each file's remembered cursor position (clamped to contents).
+        let mut restored_any = false;
+        for b in &mut buffers {
+            if let Some((line, col)) = b.path.as_deref().and_then(|p| positions.get(p)) {
+                b.restore_position(line, col);
+                restored_any = true;
+            }
+        }
         let mut app = App {
             config,
             buffers,
@@ -198,7 +215,12 @@ impl App {
             next_recovery_id,
             disk_warned: false,
             last_drag_row: 0,
+            positions,
+            help_panel: crate::ui::help::HelpPanel::default(),
+            pending_center: restored_any,
         };
+        app.sync_tab_width();
+
         // Load sandboxed WASM modules from <config>/plugins/*.wasm — those that
         // export `doe_eval` register as document evaluators, the rest as plugins.
         app.load_wasm_modules();
@@ -248,6 +270,11 @@ impl App {
                 path: buf.path.as_ref().map(|p| p.to_string_lossy().into_owned()),
                 has_backup,
             });
+            // Keep the per-file cursor memory fresh (no-op when unchanged).
+            if let Some(p) = buf.path.clone() {
+                let (line, col) = buf.pos_to_line_col(buf.primary_cursor().head);
+                self.positions.record(&p, line, col);
+            }
         }
         self.recovery.write_session(&Session { active, buffers: entries });
     }
@@ -263,7 +290,39 @@ impl App {
     pub fn resize(&mut self, w: u16, h: u16) {
         self.width = w;
         self.height = h;
+        if self.pending_center {
+            self.pending_center = false;
+            self.center_cursor();
+        }
         self.ensure_cursor_visible();
+    }
+
+    /// Scroll so the primary cursor's line sits mid-viewport (used when a
+    /// remembered position is restored, so the context around it is visible).
+    fn center_cursor(&mut self) {
+        let half = (self.text_rows() / 2).max(1);
+        if self.soft_wrap() {
+            let width = self.text_cols().max(1);
+            let buf = self.active_buffer();
+            let (mut l, mut s, _) = wrap::vpos_of(buf, buf.primary_cursor().head, width);
+            for _ in 0..half {
+                match wrap::prev_visual(buf, l, s, width) {
+                    Some((nl, ns)) => {
+                        l = nl;
+                        s = ns;
+                    }
+                    None => break,
+                }
+            }
+            self.top_line = l;
+            self.top_subrow = s;
+        } else {
+            let (line, _) = {
+                let b = self.active_buffer();
+                b.pos_to_line_col(b.primary_cursor().head)
+            };
+            self.top_line = line.saturating_sub(half);
+        }
     }
 
     /// Recompute whether the top visible line is inside a fenced code block, by
@@ -307,8 +366,15 @@ impl App {
     }
 
     fn text_rows(&self) -> usize {
-        // One reserved row at the bottom: the combined status/command line.
-        self.height.saturating_sub(1) as usize
+        // Reserved rows: the status/command line at the bottom, plus the
+        // tab-stop ruler at the top when shown.
+        let reserved = 1 + self.config.settings.show_tab_ruler as u16;
+        self.height.saturating_sub(reserved) as usize
+    }
+
+    /// Screen rows above the text area (the tab-stop ruler, when shown).
+    fn text_top(&self) -> u16 {
+        self.config.settings.show_tab_ruler as u16
     }
 
     fn text_cols(&self) -> usize {
@@ -317,6 +383,16 @@ impl App {
 
     fn soft_wrap(&self) -> bool {
         self.config.settings.soft_wrap
+    }
+
+    /// Propagate the configured `tab_width` to every buffer as the uniform
+    /// fallback for tab-stop resolution. Buffers re-parse their front matter only
+    /// when the width actually changes.
+    fn sync_tab_width(&mut self) {
+        let w = self.config.settings.tab_width;
+        for b in &mut self.buffers {
+            b.set_tab_width(w);
+        }
     }
 
     fn ensure_cursor_visible(&mut self) {
@@ -332,7 +408,8 @@ impl App {
         let cols = self.text_cols().max(1);
         let (line, col) = {
             let b = self.active_buffer();
-            b.pos_to_line_col(b.primary_cursor().head)
+            let (line, off) = b.pos_to_line_col(b.primary_cursor().head);
+            (line, b.display_col(line, off))
         };
         if line < self.top_line {
             self.top_line = line;
@@ -444,6 +521,10 @@ impl App {
     // --- input -------------------------------------------------------------
 
     pub fn handle_key(&mut self, ev: KeyEvent) {
+        if self.help_panel.open {
+            self.handle_help_key(ev);
+            return;
+        }
         if self.settings_panel.open {
             self.handle_settings_key(ev);
             return;
@@ -697,6 +778,23 @@ impl App {
     }
 
     /// Key handling while the settings panel is open.
+    /// Key handling while the keyboard-shortcut overview is open.
+    fn handle_help_key(&mut self, ev: KeyEvent) {
+        use crossterm::event::KeyCode::*;
+        let page = crate::ui::help::page_rows(self);
+        let total = crate::ui::help::rows(self).len();
+        match ev.code {
+            Esc | Enter | F(1) | Char('q') => self.help_panel.close(),
+            Up => self.help_panel.scroll_by(-1, page, total),
+            Down => self.help_panel.scroll_by(1, page, total),
+            PageUp => self.help_panel.scroll_by(-(page as isize), page, total),
+            PageDown => self.help_panel.scroll_by(page as isize, page, total),
+            Home => self.help_panel.scroll = 0,
+            End => self.help_panel.scroll_by(total as isize, page, total),
+            _ => {}
+        }
+    }
+
     fn handle_settings_key(&mut self, ev: KeyEvent) {
         use crossterm::event::KeyCode::*;
         match ev.code {
@@ -798,6 +896,7 @@ impl App {
                 "render_callouts" => s.render_callouts = !s.render_callouts,
                 "touch_scroll" => s.touch_scroll = !s.touch_scroll,
                 "mouse" => s.mouse = !s.mouse,
+                "show_tab_ruler" => s.show_tab_ruler = !s.show_tab_ruler,
                 _ => {}
             },
             settings::Kind::Int(lo, hi) => {
@@ -819,6 +918,8 @@ impl App {
                 }
             }
         }
+        // A changed tab width re-resolves every buffer's tab stops.
+        self.sync_tab_width();
         // Geometry-affecting settings need the viewport re-clamped.
         self.ensure_cursor_visible();
     }
@@ -840,6 +941,7 @@ impl App {
             "render_callouts" => on(s.render_callouts),
             "touch_scroll" => on(s.touch_scroll),
             "mouse" => on(s.mouse),
+            "show_tab_ruler" => on(s.show_tab_ruler),
             _ => String::new(),
         }
     }
@@ -933,6 +1035,16 @@ impl App {
         if !self.config.settings.mouse {
             return;
         }
+        // Clicks on the ruler row manage tab stops instead of moving the
+        // cursor; other events (scroll wheel) fall through to normal handling.
+        if self.config.settings.show_tab_ruler && ev.row == 0 {
+            if let MouseEventKind::Down(btn @ (MouseButton::Left | MouseButton::Right)) = ev.kind {
+                if let Some(col) = self.ruler_col(ev.column) {
+                    self.ruler_click(col, btn == MouseButton::Right);
+                }
+                return;
+            }
+        }
         match ev.kind {
             MouseEventKind::ScrollDown => self.scroll(3),
             MouseEventKind::ScrollUp => self.scroll(-3),
@@ -966,6 +1078,65 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Display column under a ruler-row click, or `None` in the gutter.
+    fn ruler_col(&self, x: u16) -> Option<usize> {
+        let gutter = self.gutter();
+        if x < gutter {
+            return None;
+        }
+        let base = if self.soft_wrap() { 0 } else { self.left_col };
+        Some(base + (x - gutter) as usize)
+    }
+
+    /// Handle a click on the tab-stop ruler. Clicking an empty column adds a
+    /// left stop; clicking an existing stop cycles its alignment
+    /// (L → R → C → D → removed); right-click removes it directly.
+    fn ruler_click(&mut self, col: usize, remove: bool) {
+        use crate::editor::tabstops::TabAlign;
+        let b = self.active_buffer_mut();
+        let mut stops = b.tabstops().explicit().to_vec();
+        let hit = stops.iter().position(|s| s.col.abs_diff(col) <= 1);
+        let msg = match hit {
+            Some(i) if remove => {
+                let c = stops.remove(i).col;
+                b.set_tab_stops(stops);
+                format!("removed tab stop at column {c}")
+            }
+            Some(i) => {
+                let c = stops[i].col;
+                let next = match stops[i].align {
+                    TabAlign::Left => Some((TabAlign::Right, "right")),
+                    TabAlign::Right => Some((TabAlign::Center, "center")),
+                    TabAlign::Center => Some((TabAlign::Decimal, "decimal")),
+                    TabAlign::Decimal => None,
+                };
+                match next {
+                    Some((a, label)) => {
+                        stops[i].align = a;
+                        b.set_tab_stops(stops);
+                        format!("tab stop {c}: {label}-aligned (click cycles, right-click removes)")
+                    }
+                    None => {
+                        stops.remove(i);
+                        b.set_tab_stops(stops);
+                        format!("removed tab stop at column {c}")
+                    }
+                }
+            }
+            None if remove => return,
+            None => {
+                b.add_tab_stop(col);
+                format!("tab stop set at column {col} (click cycles alignment)")
+            }
+        };
+        self.set_status(msg);
+        // Same invalidation as an `edited` command: the front matter changed.
+        self.search.matches.clear();
+        self.diagnostics.clear();
+        self.notify(Event::BufferChange);
+        self.ensure_cursor_visible();
     }
 
     /// Scroll the viewport by `delta` rows (visual rows when wrapping).
@@ -1002,6 +1173,8 @@ impl App {
     /// text area.
     fn mouse_to_pos(&self, col: u16, row: u16) -> Option<usize> {
         let gutter = self.gutter();
+        // Screen row -> text-area row (the ruler row, if shown, is above it).
+        let row = row.checked_sub(self.text_top())?;
         if row as usize >= self.text_rows() {
             return None;
         }
@@ -1029,8 +1202,9 @@ impl App {
             if line >= b.len_lines() {
                 return Some(b.len_chars());
             }
-            let char_col = self.left_col + (col - gutter) as usize;
-            Some(b.line_col_to_pos(line, char_col))
+            let display_col = self.left_col + (col - gutter) as usize;
+            let off = b.char_off_for_col(line, display_col);
+            Some(b.rope.line_to_char(line) + off)
         }
     }
 
@@ -1087,10 +1261,63 @@ impl App {
                 self.active_buffer_mut().delete();
                 edited = true;
             }
+            Command::DeleteWordLeft => {
+                self.active_buffer_mut().delete_word_left();
+                edited = true;
+            }
+            Command::DeleteWordRight => {
+                self.active_buffer_mut().delete_word_right();
+                edited = true;
+            }
             Command::Tab => {
                 let (sp, tw) = (self.config.settings.insert_spaces, self.config.settings.tab_width);
                 self.active_buffer_mut().insert_tab(sp, tw);
                 edited = true;
+            }
+            Command::SetTabStop(col) => {
+                let b = self.active_buffer_mut();
+                let col = col.unwrap_or_else(|| {
+                    let (line, off) = b.pos_to_line_col(b.primary_cursor().head);
+                    b.display_col(line, off)
+                });
+                if b.add_tab_stop(col) {
+                    let hint = if self.config.settings.show_tab_ruler { "" } else { " — :ruler to manage visually" };
+                    self.set_status(format!("tab stop set at column {col}{hint}"));
+                    edited = true;
+                } else {
+                    self.set_status(format!("tab stop already at column {col}"));
+                }
+            }
+            Command::RemoveTabStop => {
+                let b = self.active_buffer_mut();
+                let (line, off) = b.pos_to_line_col(b.primary_cursor().head);
+                let col = b.display_col(line, off);
+                match b.remove_tab_stop_near(col) {
+                    Some(removed) => {
+                        self.set_status(format!("removed tab stop at column {removed}"));
+                        edited = true;
+                    }
+                    None => self.set_status("no tab stops to remove"),
+                }
+            }
+            Command::ClearTabStops => {
+                if self.active_buffer_mut().clear_tab_stops() {
+                    self.set_status("cleared all tab stops");
+                    edited = true;
+                } else {
+                    self.set_status("no tab stops to clear");
+                }
+            }
+            Command::ToggleTabRuler => {
+                let s = &mut self.config.settings;
+                s.show_tab_ruler = !s.show_tab_ruler;
+                let on = s.show_tab_ruler;
+                self.set_status(if on {
+                    "tab ruler on — click sets a stop, click a stop cycles L/R/C/D, right-click removes"
+                } else {
+                    "tab ruler off"
+                });
+                moved = true; // text area height changed; re-clamp the viewport
             }
             Command::Undo => {
                 if !self.active_buffer_mut().undo() {
@@ -1191,6 +1418,7 @@ impl App {
             Command::CommandPalette => self.open_modal(ModalTab::Commands),
             Command::OpenBuffers => self.open_modal(ModalTab::Buffers),
 
+            Command::Help => self.help_panel.open(),
             Command::Settings => self.settings_panel.open(),
             Command::CalloutSettings => self.callout_panel.open(),
             Command::ImportObsidianCallouts => self.import_obsidian_callouts(),
@@ -1241,6 +1469,16 @@ impl App {
     fn shutdown(&mut self, discard: bool) {
         self.palette.save();
         self.file_picker.save();
+        // Remember every open file's cursor position for the next launch
+        // (independent of whether unsaved changes are kept or discarded).
+        for i in 0..self.buffers.len() {
+            let buf = &self.buffers[i];
+            if let Some(p) = buf.path.clone() {
+                let (line, col) = buf.pos_to_line_col(buf.primary_cursor().head);
+                self.positions.record(&p, line, col);
+            }
+        }
+        self.positions.save();
         if discard {
             self.recovery.clear();
         } else {
@@ -1304,11 +1542,21 @@ impl App {
         match Buffer::from_file(&path) {
             Ok(mut b) => {
                 b.recovery_id = self.fresh_recovery_id();
+                b.set_tab_width(self.config.settings.tab_width);
+                // Continue where you left off in this file, with context around
+                // the cursor visible.
+                let remembered = self.positions.get(&path);
+                if let Some((line, col)) = remembered {
+                    b.restore_position(line, col);
+                }
                 self.buffers.push(b);
                 self.active = self.buffers.len() - 1;
                 self.top_line = 0;
                 self.top_subrow = 0;
                 self.left_col = 0;
+                if remembered.is_some() {
+                    self.center_cursor();
+                }
                 self.set_status(format!("opened {}", files::display_path(&path)));
                 self.notify(Event::OpenFile(path));
                 self.ensure_cursor_visible();
@@ -1622,9 +1870,19 @@ impl App {
 
     /// Actually remove the active buffer (caller has resolved any unsaved state).
     fn do_close_buffer(&mut self) {
+        // Remember the closed buffer's cursor for its next open.
+        {
+            let buf = &self.buffers[self.active];
+            if let Some(p) = buf.path.clone() {
+                let (line, col) = buf.pos_to_line_col(buf.primary_cursor().head);
+                self.positions.record(&p, line, col);
+                self.positions.save();
+            }
+        }
         if self.buffers.len() == 1 {
             let mut b = Buffer::empty();
             b.recovery_id = self.fresh_recovery_id();
+            b.set_tab_width(self.config.settings.tab_width);
             self.buffers[0] = b;
         } else {
             let closed = self.buffers.remove(self.active);

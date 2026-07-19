@@ -31,6 +31,8 @@ pub fn parse(input: &str) -> Option<Command> {
         "newline" => Command::InsertNewline,
         "backspace" => Command::Backspace,
         "delete" => Command::Delete,
+        "delete_word_left" | "delete_word" => Command::DeleteWordLeft,
+        "delete_word_right" => Command::DeleteWordRight,
 
         "toggle_bold" => Command::ToggleBold,
         "toggle_italic" => Command::ToggleItalic,
@@ -81,9 +83,23 @@ pub fn parse(input: &str) -> Option<Command> {
         "close_buffer" => Command::CloseBuffer,
         "goto_buffer" => Command::GotoBuffer(rest.parse::<usize>().ok()?.saturating_sub(1)),
 
+        "set_tab_stop" => Command::SetTabStop(None),
+        "toggle_tab_ruler" | "ruler" => Command::ToggleTabRuler,
+        "remove_tab_stop" => Command::RemoveTabStop,
+        "clear_tab_stops" => Command::ClearTabStops,
+        // `:tabstop` power form — bare sets at the cursor; a number sets at that
+        // column; `clear`/`remove` manage existing stops.
+        "tabstop" | "tab_stop" => match rest {
+            "" => Command::SetTabStop(None),
+            "clear" => Command::ClearTabStops,
+            "remove" | "unset" => Command::RemoveTabStop,
+            n => Command::SetTabStop(Some(n.parse::<usize>().ok()?)),
+        },
+
         "command_palette" => Command::CommandPalette,
         "open_buffers" | "buffers" => Command::OpenBuffers,
         "toggle_soft_wrap" => Command::ToggleSoftWrap,
+        "help" | "keys" | "shortcuts" | "keybindings" => Command::Help,
         "settings" | "preferences" => Command::Settings,
         "callout_settings" | "callouts" => Command::CalloutSettings,
         "import_callouts" | "import_obsidian_callouts" => Command::ImportObsidianCallouts,

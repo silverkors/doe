@@ -32,6 +32,7 @@ pub fn items() -> Vec<Item> {
         Item { key: "render_callouts", label: "Render Markdown callouts", kind: Kind::Bool },
         Item { key: "tab_width", label: "Tab width", kind: Kind::Int(1, 8) },
         Item { key: "insert_spaces", label: "Insert spaces (instead of tabs)", kind: Kind::Bool },
+        Item { key: "show_tab_ruler", label: "Tab-stop ruler", kind: Kind::Bool },
         Item { key: "show_whitespace", label: "Show whitespace", kind: Kind::Bool },
         Item { key: "trim_trailing_whitespace_on_save", label: "Trim trailing whitespace on save", kind: Kind::Bool },
         Item { key: "mouse", label: "Mouse", kind: Kind::Bool },

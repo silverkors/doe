@@ -4,6 +4,7 @@
 //! consistent whether there is one caret or fifty.
 
 use super::cursor::Cursor;
+use super::tabstops::{self, TabStop, TabStops};
 use super::undo::{History, Snapshot};
 use crate::syntax::Language;
 use anyhow::{Context, Result};
@@ -35,6 +36,12 @@ pub struct Buffer {
     pub recovery_id: u64,
     history: History,
     disk_mtime: Option<SystemTime>,
+    /// Uniform fallback width (synced from `Settings::tab_width`) used to resolve
+    /// tab stops beyond any explicit ones declared in front matter.
+    tab_width: usize,
+    /// Resolved tab stops for this document, cached and refreshed on every edit
+    /// (front matter is small and lives at the top, so this stays cheap).
+    tabstops: TabStops,
 }
 
 impl Buffer {
@@ -51,6 +58,8 @@ impl Buffer {
             recovery_id: 0,
             history: History::new(),
             disk_mtime: None,
+            tab_width: 4,
+            tabstops: TabStops::uniform(4),
         }
     }
 
@@ -63,7 +72,7 @@ impl Buffer {
             Rope::new()
         };
         let mtime = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
-        Ok(Buffer {
+        let mut buf = Buffer {
             rope,
             language: Language::from_path(path),
             path: Some(path.to_path_buf()),
@@ -75,12 +84,226 @@ impl Buffer {
             recovery_id: 0,
             history: History::new(),
             disk_mtime: mtime,
-        })
+            tab_width: 4,
+            tabstops: TabStops::uniform(4),
+        };
+        buf.refresh_tabstops();
+        Ok(buf)
     }
 
     fn mark_modified(&mut self) {
         self.modified = true;
         self.revision = self.revision.wrapping_add(1);
+        self.refresh_tabstops();
+    }
+
+    /// Largest slice of the document head that front matter could occupy. Tab
+    /// stops are resolved from this bounded prefix so re-parsing per edit stays
+    /// O(1) regardless of file size.
+    const FRONTMATTER_SCAN: usize = 8192;
+
+    /// Recompute the cached tab stops from the document's front matter, using
+    /// the current `tab_width` as the uniform fallback.
+    pub fn refresh_tabstops(&mut self) {
+        let n = self.rope.len_chars().min(Self::FRONTMATTER_SCAN);
+        let head = self.rope.slice(0..n).to_string();
+        self.tabstops = tabstops::from_document(&head, self.tab_width.max(1));
+    }
+
+    /// Sync the uniform fallback width from settings, recomputing stops if it
+    /// changed. Called when configuration loads or `tab_width` is edited.
+    pub fn set_tab_width(&mut self, width: usize) {
+        let width = width.max(1);
+        if width != self.tab_width {
+            self.tab_width = width;
+            self.refresh_tabstops();
+        }
+    }
+
+    pub fn tabstops(&self) -> &TabStops {
+        &self.tabstops
+    }
+
+    #[cfg(test)]
+    pub fn set_tabstops_for_test(&mut self, stops: TabStops) {
+        self.tabstops = stops;
+    }
+
+    /// Rewrite the document's explicit tab stops in its YAML front matter as one
+    /// undoable edit, preserving cursor positions (the edit is at the top of the
+    /// document, so body cursors just shift). The cached [`TabStops`] refreshes
+    /// via `mark_modified`.
+    pub fn set_tab_stops(&mut self, stops: Vec<TabStop>) {
+        let n = self.rope.len_chars().min(Self::FRONTMATTER_SCAN);
+        let head = self.rope.slice(0..n).to_string();
+        let (s, e, rep) = tabstops::splice_tabstops(&head, &stops);
+        if s == e && rep.is_empty() {
+            return; // nothing to do
+        }
+        self.record(false);
+        if e > s {
+            self.rope.remove(s..e);
+        }
+        if !rep.is_empty() {
+            self.rope.insert(s, &rep);
+        }
+        let rep_len = rep.chars().count();
+        let delta = rep_len as isize - (e - s) as isize;
+        let shift = |p: usize| -> usize {
+            if p <= s {
+                p
+            } else if p >= e {
+                (p as isize + delta) as usize
+            } else {
+                s + rep_len // landed inside the rewritten region
+            }
+        };
+        for c in &mut self.cursors {
+            c.head = shift(c.head);
+            c.anchor = shift(c.anchor);
+            c.goal_col = None;
+        }
+        self.mark_modified();
+        self.normalize();
+    }
+
+    /// Add a left tab stop at display column `col` (no-op if one already exists
+    /// there). Returns whether anything changed.
+    pub fn add_tab_stop(&mut self, col: usize) -> bool {
+        let mut stops = self.tabstops.explicit().to_vec();
+        if stops.iter().any(|s| s.col == col) {
+            return false;
+        }
+        stops.push(TabStop::left(col));
+        self.set_tab_stops(stops);
+        true
+    }
+
+    /// Remove the explicit stop nearest `col`. Returns the removed column, if any.
+    pub fn remove_tab_stop_near(&mut self, col: usize) -> Option<usize> {
+        let stops = self.tabstops.explicit();
+        let idx = (0..stops.len()).min_by_key(|&i| stops[i].col.abs_diff(col))?;
+        let removed = stops[idx].col;
+        let mut kept = stops.to_vec();
+        kept.remove(idx);
+        self.set_tab_stops(kept);
+        Some(removed)
+    }
+
+    /// Remove every explicit tab stop. Returns whether any existed.
+    pub fn clear_tab_stops(&mut self) -> bool {
+        if self.tabstops.explicit().is_empty() {
+            return false;
+        }
+        self.set_tab_stops(Vec::new());
+        true
+    }
+
+    /// Characters of `line` as a `Vec`, excluding the trailing newline.
+    fn line_chars(&self, line: usize) -> Vec<char> {
+        let start = self.rope.line_to_char(line);
+        let len = self.line_len_chars(line);
+        self.rope.slice(start..start + len).chars().collect()
+    }
+
+    /// The display layout of `line`: per-char cell spans plus total width.
+    /// This is the single source for on-screen geometry — rendering, cursor,
+    /// mouse and soft wrap all agree because they all come here.
+    ///
+    /// Markdown callout lines lay out on the *visible-column grid*: the `> `
+    /// marker and concealed markup (`**`, `[!type]`, `\`) occupy screen cells
+    /// but don't count toward tab-stop columns, so the raw view gets exactly
+    /// the tab widths its preview card shows.
+    pub fn line_spans(&self, line: usize) -> (Vec<tabstops::CellSpan>, usize) {
+        let chars = self.line_chars(line);
+        if self.language == Language::Markdown {
+            if let Some(cstart) = self.callout_content_start(line, &chars) {
+                let content: String = chars[cstart.min(chars.len())..].iter().collect();
+                let vis = crate::syntax::markdown::visible_mask(&content);
+                return self.tabstops.spans_concealed(&chars, cstart, &vis);
+            }
+        }
+        self.tabstops.spans(&chars)
+    }
+
+    /// Display column of a char offset within `line` (tab-aware).
+    pub fn display_col(&self, line: usize, off: usize) -> usize {
+        let (spans, total) = self.line_spans(line);
+        if off >= spans.len() {
+            total
+        } else {
+            spans[off].col
+        }
+    }
+
+    /// Char offset within `line` nearest the given display column (tab-aware).
+    /// A position inside a tab's whitespace snaps to the nearer edge.
+    pub fn char_off_for_col(&self, line: usize, col: usize) -> usize {
+        let (spans, _) = self.line_spans(line);
+        for (i, s) in spans.iter().enumerate() {
+            if col < s.col + s.width {
+                return if col.saturating_sub(s.col) < s.width.div_ceil(2) { i } else { i + 1 };
+            }
+        }
+        spans.len()
+    }
+
+    /// Total display width of `line` (tab-aware).
+    #[allow(dead_code)] // used by the tab-stop ruler UI (later step)
+    pub fn line_display_width(&self, line: usize) -> usize {
+        self.line_spans(line).1
+    }
+
+    /// If `line` belongs to a callout block (a run of `>` lines whose first
+    /// line is a `> [!type]` header), the char offset where its *preview
+    /// content* starts: past `>` and one conventional space, and for the
+    /// header line also past the `[!type]` marker. Mirrors the renderer's
+    /// block detection so geometry and painting agree.
+    fn callout_content_start(&self, line: usize, chars: &[char]) -> Option<usize> {
+        /// Bound the upward scan so pathological quote runs stay cheap.
+        const SCAN_UP: usize = 512;
+        let quote_marker = |chars: &[char]| -> Option<usize> {
+            let i = chars.iter().position(|c| !c.is_whitespace())?;
+            (chars[i] == '>').then_some(i)
+        };
+        let marker = quote_marker(chars)?;
+        let mut top = line;
+        while top > 0 && line - top < SCAN_UP {
+            let above = self.line_chars(top - 1);
+            if quote_marker(&above).is_none() {
+                break;
+            }
+            top -= 1;
+        }
+        // The block's first line must be a callout header: `> [!type…]`.
+        let is_header_line = |chars: &[char]| -> Option<usize> {
+            let m = quote_marker(chars)?;
+            let mut i = m + 1;
+            if chars.get(i) == Some(&' ') {
+                i += 1;
+            }
+            if chars.get(i) != Some(&'[') || chars.get(i + 1) != Some(&'!') {
+                return None;
+            }
+            let close = (i + 2..chars.len()).find(|&j| chars[j] == ']')?;
+            (close > i + 2).then_some(close + 1)
+        };
+        if line == top {
+            // Header: content starts after `[!type]` and one space.
+            let mut i = is_header_line(chars)?;
+            if chars.get(i) == Some(&' ') {
+                i += 1;
+            }
+            Some(i)
+        } else {
+            is_header_line(&self.line_chars(top))?;
+            // Body: content starts after `>` and one conventional space.
+            let mut i = marker + 1;
+            if chars.get(i) == Some(&' ') {
+                i += 1;
+            }
+            Some(i)
+        }
     }
 
     /// Replace the entire contents (used to restore recovered/unsaved content).
@@ -136,6 +359,17 @@ impl Buffer {
         (line, col)
     }
 
+    /// Place a single cursor at `(line, char-column)`, clamped to the current
+    /// contents. Used to restore the remembered position when reopening a file.
+    pub fn restore_position(&mut self, line: usize, col: usize) {
+        let pos = self.line_col_to_pos(line, col);
+        self.cursors = vec![Cursor::new(pos)];
+        self.primary = 0;
+    }
+
+    /// Char position for a `(line, char-column)` pair. Note this is a *char*
+    /// column, not a display column — use [`Buffer::char_off_for_col`] for
+    /// tab-aware (display-column) mapping.
     pub fn line_col_to_pos(&self, line: usize, col: usize) -> usize {
         let last = self.rope.len_lines().saturating_sub(1);
         let line = line.min(last);
@@ -306,6 +540,7 @@ impl Buffer {
         self.insert_at_cursors(&ch.to_string(), coalesce);
     }
 
+    #[allow(dead_code)]
     pub fn insert_str(&mut self, s: &str) {
         self.insert_at_cursors(s, false);
     }
@@ -385,12 +620,85 @@ impl Buffer {
         self.apply_edits(edits);
     }
 
-    pub fn insert_tab(&mut self, insert_spaces: bool, tab_width: usize) {
-        if insert_spaces {
-            let spaces = " ".repeat(tab_width.max(1));
-            self.insert_str(&spaces);
-        } else {
-            self.insert_str("\t");
+    /// Insert a tab at every cursor. With `insert_spaces` it expands to the
+    /// number of spaces needed to reach the next tab stop *for that cursor's
+    /// column*; otherwise it stores a literal `\t`, which reflows if the stops
+    /// change. Documents that declare explicit stops always store `\t` — spaces
+    /// would burn the layout in and (in previews that conceal markup) be
+    /// computed against the wrong column grid. The `_tab_width` argument is
+    /// kept for call-site compatibility — the uniform fallback now lives on the
+    /// buffer's resolved [`TabStops`].
+    pub fn insert_tab(&mut self, insert_spaces: bool, _tab_width: usize) {
+        let insert_spaces = insert_spaces && self.tabstops.explicit().is_empty();
+        self.record(false);
+        let edits = self
+            .cursors
+            .iter()
+            .map(|c| {
+                let (s, e) = c.range();
+                let text = if insert_spaces {
+                    let (line, off) = self.pos_to_line_col(s);
+                    let col = self.display_col(line, off);
+                    " ".repeat(self.tabstops.tab_width_at(col))
+                } else {
+                    "\t".to_string()
+                };
+                Edit { start: s, end: e, text }
+            })
+            .collect();
+        self.apply_edits(edits);
+    }
+
+    /// Delete from the previous word boundary to each cursor (Alt/Ctrl+Backspace).
+    /// A cursor with a selection deletes the selection instead.
+    pub fn delete_word_left(&mut self) {
+        self.record(false);
+        let mut ranges: Vec<(usize, usize)> = self
+            .cursors
+            .iter()
+            .map(|c| {
+                if c.has_selection() {
+                    c.range()
+                } else {
+                    (self.word_boundary_left(c.head), c.head)
+                }
+            })
+            .collect();
+        Self::clip_overlaps(&mut ranges);
+        let edits =
+            ranges.into_iter().map(|(s, e)| Edit { start: s, end: e, text: String::new() }).collect();
+        self.apply_edits(edits);
+    }
+
+    /// Delete from each cursor to the next word boundary (Alt/Ctrl+Delete).
+    pub fn delete_word_right(&mut self) {
+        self.record(false);
+        let mut ranges: Vec<(usize, usize)> = self
+            .cursors
+            .iter()
+            .map(|c| {
+                if c.has_selection() {
+                    c.range()
+                } else {
+                    (c.head, self.word_boundary_right(c.head))
+                }
+            })
+            .collect();
+        Self::clip_overlaps(&mut ranges);
+        let edits =
+            ranges.into_iter().map(|(s, e)| Edit { start: s, end: e, text: String::new() }).collect();
+        self.apply_edits(edits);
+    }
+
+    /// Clip overlapping delete ranges (two cursors in the same word) so each
+    /// char is deleted exactly once. Preserves index order for `apply_edits`.
+    fn clip_overlaps(ranges: &mut [(usize, usize)]) {
+        let mut order: Vec<usize> = (0..ranges.len()).collect();
+        order.sort_by_key(|&i| ranges[i].0);
+        let mut prev_end = 0;
+        for &i in &order {
+            ranges[i].0 = ranges[i].0.max(prev_end).min(ranges[i].1);
+            prev_end = prev_end.max(ranges[i].1);
         }
     }
 
@@ -437,11 +745,12 @@ impl Buffer {
         let cursors = std::mem::take(&mut self.cursors);
         let mut moved = Vec::with_capacity(cursors.len());
         for mut c in cursors {
-            let (line, col) = self.pos_to_line_col(c.head);
-            let goal = c.goal_col.unwrap_or(col);
+            let (line, off) = self.pos_to_line_col(c.head);
+            // Goal column is a display column so tabs preserve visual alignment.
+            let goal = c.goal_col.unwrap_or_else(|| self.display_col(line, off));
             let target = (line as isize + delta).clamp(0, last_line as isize) as usize;
-            let new_col = goal.min(self.line_len_chars(target));
-            let pos = self.rope.line_to_char(target) + new_col;
+            let new_off = self.char_off_for_col(target, goal);
+            let pos = self.rope.line_to_char(target) + new_off;
             c.head = pos;
             if !extend {
                 c.anchor = pos;
@@ -1036,6 +1345,33 @@ mod tests {
     }
 
     #[test]
+    fn delete_word_left_removes_previous_word() {
+        let mut b = buf("hej världen fina");
+        b.cursors = vec![Cursor::new(11)]; // after "världen"
+        b.delete_word_left();
+        assert_eq!(b.rope.to_string(), "hej  fina");
+        assert_eq!(b.cursors[0].head, 4);
+        // Trailing whitespace before the cursor is eaten together with the word.
+        let mut b = buf("hej världen ");
+        b.cursors = vec![Cursor::new(12)]; // at end, after the space
+        b.delete_word_left();
+        assert_eq!(b.rope.to_string(), "hej ");
+    }
+
+    #[test]
+    fn delete_word_right_and_multi_cursor_clip() {
+        let mut b = buf("hej världen");
+        b.cursors = vec![Cursor::new(0)];
+        b.delete_word_right();
+        assert_eq!(b.rope.to_string(), " världen");
+        // Two cursors inside the same word: ranges clip, the word deletes once.
+        let mut b = buf("abcdef x");
+        b.cursors = vec![Cursor::new(3), Cursor::new(6)];
+        b.delete_word_left();
+        assert_eq!(b.rope.to_string(), " x");
+    }
+
+    #[test]
     fn undo_redo_roundtrip() {
         let mut b = buf("");
         b.cursors = vec![Cursor::new(0)];
@@ -1058,6 +1394,77 @@ mod tests {
         b.move_vertical(1, false); // line 2 "world" -> goal col 4 restored
         let (l, c) = b.pos_to_line_col(b.cursors[0].head);
         assert_eq!((l, c), (2, 4));
+    }
+
+    #[test]
+    fn add_tab_stop_writes_frontmatter_and_keeps_cursor() {
+        let mut b = buf("body\n");
+        b.cursors = vec![Cursor::new(2)]; // between 'o' and 'd'
+        assert!(b.add_tab_stop(16));
+        assert!(b.rope.to_string().starts_with("---\ntabstops: [16]\n---\n\n"));
+        assert_eq!(b.tabstops().explicit().iter().map(|s| s.col).collect::<Vec<_>>(), vec![16]);
+        // The cursor still sits between 'o' and 'd' in the body.
+        let head = b.cursors[0].head;
+        assert_eq!(b.rope.slice(head - 2..head).to_string(), "bo");
+        // Idempotent: adding the same column again does nothing.
+        assert!(!b.add_tab_stop(16));
+    }
+
+    #[test]
+    fn callout_raw_tabs_match_preview_grid() {
+        // stops [3]; a callout with markup before one tab and none before the other.
+        let mut b = buf("---\ntabstops: [3]\n---\n> [!note] T\n> **II**\tTy\n> \tsom\n");
+        b.language = Language::Markdown;
+        b.refresh_tabstops();
+        // `> **II**\tTy`: tab (index 8) sits at *visible* col 2 ("II") -> stop 3
+        // -> width 1, exactly like the preview card.
+        let (spans, _) = b.line_spans(4);
+        assert_eq!(spans[8].width, 1);
+        // `> \tsom`: tab (index 2) at visible col 0 -> stop 3 -> width 3.
+        let (spans, _) = b.line_spans(5);
+        assert_eq!(spans[2].width, 3);
+        // Concealed markup still occupies one screen cell each (raw shows it).
+        let (spans, _) = b.line_spans(4);
+        assert_eq!(spans[2].col, 2); // first '*' right after "> "
+        assert_eq!(spans[8].col, 8); // tab's screen cell after "> **II**"
+    }
+
+    #[test]
+    fn plain_quote_keeps_absolute_grid() {
+        // A blockquote without a callout header is not previewed, so it keeps
+        // the plain absolute-column layout.
+        let mut b = buf("> quote\there");
+        b.language = Language::Markdown;
+        b.refresh_tabstops();
+        let (spans, _) = b.line_spans(0);
+        // tab at raw col 7 -> uniform stop 8 -> width 1.
+        assert_eq!(spans[7].width, 1);
+    }
+
+    #[test]
+    fn explicit_stops_force_real_tabs_even_in_spaces_mode() {
+        let mut b = buf("---\ntabstops: [3]\n---\nx");
+        b.refresh_tabstops();
+        b.cursors = vec![Cursor::new(b.rope.len_chars())];
+        b.insert_tab(true, 4); // insert_spaces on, but the doc declares stops
+        assert!(b.rope.to_string().ends_with("x\t"));
+        // Without explicit stops, spaces mode still applies.
+        let mut b = buf("x");
+        b.cursors = vec![Cursor::new(1)];
+        b.insert_tab(true, 4);
+        assert_eq!(b.rope.to_string(), "x   "); // to the next uniform stop (4)
+    }
+
+    #[test]
+    fn remove_and_clear_tab_stops() {
+        let mut b = buf("---\ntabstops: [8, 24, 40]\n---\nbody\n");
+        b.refresh_tabstops();
+        assert_eq!(b.remove_tab_stop_near(26), Some(24)); // nearest to 26
+        assert_eq!(b.tabstops().explicit().iter().map(|s| s.col).collect::<Vec<_>>(), vec![8, 40]);
+        assert!(b.clear_tab_stops());
+        assert!(b.tabstops().explicit().is_empty());
+        // Front matter is preserved (just the entry removed) and body intact.
+        assert!(b.rope.to_string().contains("body"));
     }
 
     #[test]

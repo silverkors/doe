@@ -3,6 +3,7 @@
 
 pub mod callouts;
 pub mod commandline;
+pub mod help;
 pub mod layout;
 pub mod modal;
 pub mod overlay;

@@ -130,6 +130,14 @@ fn inline(chars: &[char], from: usize, to: usize, out: &mut Vec<Span>, base: Sty
     let mut i = from;
     while i < to {
         let c = chars[i];
+        // Backslash escape: `\*` is a literal `*`. The backslash is markup
+        // (dimmed raw, concealed in previews); the escaped char is plain text
+        // and never opens an inline construct.
+        if c == '\\' && i + 1 < to && chars[i + 1].is_ascii_punctuation() {
+            out.push(Span::new(i, i + 1, StyleKind::MarkupPunct));
+            i += 2;
+            continue;
+        }
         // Inline code: `code`
         if c == '`' {
             if let Some(j) = find_char(chars, i + 1, to, '`') {
@@ -205,10 +213,27 @@ pub struct InlineGlyph {
 /// `<font ...>_(x)_</font>` → "(x)" (italic).
 pub fn rendered_inline(text: &str) -> Vec<InlineGlyph> {
     let chars: Vec<char> = text.chars().collect();
+    let (kind, bold, ital) = inline_kinds(&chars);
+    (0..chars.len())
+        .filter(|&c| !is_concealed(kind[c]))
+        .map(|c| InlineGlyph { ch: chars[c], kind: kind[c], bold: bold[c], italic: ital[c], index: c })
+        .collect()
+}
+
+/// Per-char visibility of `text` under preview concealment: `true` where the
+/// char is emitted by [`rendered_inline`], `false` where markup is concealed.
+/// Used to lay out raw callout lines on the same column grid as their preview.
+pub fn visible_mask(text: &str) -> Vec<bool> {
+    let chars: Vec<char> = text.chars().collect();
+    let (kind, _, _) = inline_kinds(&chars);
+    kind.into_iter().map(|k| !is_concealed(k)).collect()
+}
+
+/// Style classification of every char of a line's inline content.
+fn inline_kinds(chars: &[char]) -> (Vec<StyleKind>, Vec<bool>, Vec<bool>) {
     let n = chars.len();
     let mut spans = Vec::new();
-    inline(&chars, 0, n, &mut spans, StyleKind::Default);
-
+    inline(chars, 0, n, &mut spans, StyleKind::Default);
     let mut kind = vec![StyleKind::Default; n];
     let mut bold = vec![false; n];
     let mut ital = vec![false; n];
@@ -219,11 +244,7 @@ pub fn rendered_inline(text: &str) -> Vec<InlineGlyph> {
             ital[c] = s.italic;
         }
     }
-
-    (0..n)
-        .filter(|&c| !is_concealed(kind[c]))
-        .map(|c| InlineGlyph { ch: chars[c], kind: kind[c], bold: bold[c], italic: ital[c], index: c })
-        .collect()
+    (kind, bold, ital)
 }
 
 fn is_concealed(k: StyleKind) -> bool {
@@ -321,6 +342,28 @@ mod tests {
         assert!(spans.iter().any(|s| s.kind == StyleKind::Callout)); // accent bar/title
         assert!(spans.iter().any(|s| s.kind == StyleKind::MarkupPunct)); // [!key]
         assert!(spans.iter().any(|s| s.kind == StyleKind::Italic)); // *Svensk psalm*
+    }
+
+    #[test]
+    fn backslash_escape_conceals_backslash_keeps_char() {
+        // `\*` renders as a literal `*` — backslash concealed, star plain.
+        let g = super::rendered_inline("frälsningen \\*");
+        let s: String = g.iter().map(|g| g.ch).collect();
+        assert_eq!(s, "frälsningen *");
+        assert!(g.iter().all(|g| g.kind == StyleKind::Default));
+    }
+
+    #[test]
+    fn escaped_star_does_not_open_emphasis() {
+        // The escaped star is text, so no italic span starts at it.
+        let g = super::rendered_inline("gå hem, \\* i frid \\*");
+        let s: String = g.iter().map(|g| g.ch).collect();
+        assert_eq!(s, "gå hem, * i frid *");
+        assert!(g.iter().all(|g| !g.italic));
+        // Unescaped emphasis still works alongside.
+        let g = super::rendered_inline("\\* *kursiv*");
+        let s: String = g.iter().map(|g| g.ch).collect();
+        assert_eq!(s, "* kursiv");
     }
 
     #[test]

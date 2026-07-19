@@ -3,6 +3,7 @@
 pub mod buffer;
 pub mod cursor;
 pub mod selection;
+pub mod tabstops;
 pub mod undo;
 
 pub use buffer::Buffer;

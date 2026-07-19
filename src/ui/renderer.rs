@@ -23,7 +23,7 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     screen.begin(app.width, app.height, theme.foreground, theme.background);
 
     let buf = app.active_buffer();
-    let layout = Layout::compute(app.width, app.height, buf.len_lines(), settings.line_numbers);
+    let layout = Layout::compute(app.width, app.height, buf.len_lines(), settings.line_numbers, settings.show_tab_ruler);
     let (cur_line, _) = buf.pos_to_line_col(buf.primary_cursor().head);
 
     // Matching bracket pair for the primary cursor (display-only, bounded scan).
@@ -52,10 +52,14 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     // A visual row is a slice `[start, end)` of one buffer line on one screen
     // row. Without soft wrap there is exactly one per line (with horizontal
     // scroll); with soft wrap a long line spans several.
+    // `start`/`end` are char offsets within the buffer line; `base_col` is the
+    // display column drawn at the row's first cell (so tab-expanded glyphs land
+    // at `text_x() + display_col - base_col`).
     struct VisRow {
         line: usize,
         start: usize,
         end: usize,
+        base_col: usize,
         y: u16,
         gutter: bool,
     }
@@ -69,7 +73,8 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
             }
             let segs = wrap::segments(buf, vl, width);
             let (s, e) = segs[vs.min(segs.len() - 1)];
-            visrows.push(VisRow { line: vl, start: s, end: e, y: row, gutter: vs == 0 });
+            let base_col = buf.display_col(vl, s);
+            visrows.push(VisRow { line: vl, start: s, end: e, base_col, y: layout.text_y() + row, gutter: vs == 0 });
             match wrap::next_visual(buf, vl, vs, width) {
                 Some((l, ss)) => {
                     vl = l;
@@ -85,9 +90,13 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
                 break;
             }
             let line_len = buf.line_len_chars(ln);
-            let s = app.left_col.min(line_len);
-            let e = (app.left_col + text_width).min(line_len);
-            visrows.push(VisRow { line: ln, start: s, end: e, y: row, gutter: true });
+            // Horizontal scroll is in display columns; map the visible column
+            // window back to char offsets (a tab straddling either edge is
+            // clamped when painted). One extra char keeps a tab crossing the
+            // right edge drawable.
+            let s = buf.char_off_for_col(ln, app.left_col);
+            let e = (buf.char_off_for_col(ln, app.left_col + text_width) + 1).min(line_len);
+            visrows.push(VisRow { line: ln, start: s, end: e, base_col: app.left_col, y: layout.text_y() + row, gutter: true });
         }
     }
 
@@ -99,6 +108,7 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     let mut bolds: Vec<bool> = Vec::new();
     let mut itals: Vec<bool> = Vec::new();
     let mut chars: Vec<char> = Vec::new();
+    let mut spans: Vec<crate::editor::tabstops::CellSpan> = Vec::new();
     let mut line_start = 0usize;
     let mut line_matches: Vec<(usize, usize)> = Vec::new();
     let mut loaded_preview: Option<PreviewRole> = None;
@@ -132,7 +142,11 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
             prev_prefix = 0;
             if let Some(PreviewRole::Header(_) | PreviewRole::Body(_)) = &loaded_preview {
                 let ltext = line_text(buf, vr.line);
-                let after = ltext.trim_start().strip_prefix('>').unwrap_or("").trim_start();
+                // Strip the quote marker and only the single conventional space
+                // after it — the body's own leading whitespace is content (a
+                // leading tab indents to its stop, e.g. psalm verse halves).
+                let marker = ltext.trim_start().strip_prefix('>').unwrap_or("");
+                let after = marker.strip_prefix(' ').unwrap_or(marker);
                 let content = if matches!(loaded_preview, Some(PreviewRole::Header(_))) {
                     after.splitn(2, ']').nth(1).unwrap_or("").trim_start()
                 } else {
@@ -144,6 +158,7 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
             }
             let text: String = buf.rope.slice(line_start..line_start + line_len).to_string();
             chars = text.chars().collect();
+            spans = buf.line_spans(vr.line).0;
             kinds = vec![StyleKind::Default; line_len];
             bolds = vec![false; line_len];
             itals = vec![false; line_len];
@@ -194,25 +209,21 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
             continue;
         }
 
-        for (k, col) in (vr.start..vr.end).enumerate() {
-            let x = layout.text_x() + k as u16;
-            if x >= app.width {
-                break;
-            }
+        // Paint the row from the line's precomputed spans: each char knows its
+        // absolute display column and cell width (tabs expand to their stop,
+        // including alignment lookahead).
+        let tabstops = buf.tabstops();
+        let right = vr.base_col + text_width;
+        for col in vr.start..vr.end {
             let idx = line_start + col;
             let ch = chars[col];
+            let acol = spans[col].col;
+            let width_cells = spans[col].width;
 
             let mut fg = theme.color_for(kinds[col]);
             let mut bg = theme.background;
             let mut bold = bolds[col];
-
             let is_ws = ch == ' ' || ch == '\t';
-            let disp = match ch {
-                '\t' if settings.show_whitespace => '→',
-                ' ' if settings.show_whitespace => '·',
-                c if c.is_control() => ' ',
-                c => c,
-            };
             if settings.show_whitespace && is_ws {
                 fg = theme.whitespace;
             }
@@ -232,15 +243,48 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
                 bg = theme.selection;
             }
 
-            screen.set(x, vr.y, Cell { ch: disp, fg, bg, bold, italic: itals[col] });
+            // Paint each display cell this char occupies that falls inside the
+            // visible column window. Tabs draw their leader (or blanks); the
+            // whitespace arrow sits on the tab's first cell.
+            let tab_leader = tabstops.leader_at(acol);
+            for cell in 0..width_cells {
+                let cur = acol + cell;
+                if cur < vr.base_col {
+                    continue; // scrolled off the left edge
+                }
+                if cur >= right {
+                    break;
+                }
+                let x = layout.text_x() + (cur - vr.base_col) as u16;
+                if x >= app.width {
+                    break;
+                }
+                let disp = match ch {
+                    '\t' if settings.show_whitespace && cell == 0 => '→',
+                    '\t' => tab_leader.unwrap_or(' '),
+                    ' ' if settings.show_whitespace => '·',
+                    c if c.is_control() => ' ',
+                    c => c,
+                };
+                screen.set(x, vr.y, Cell { ch: disp, fg, bg, bold, italic: itals[col] });
+            }
+            if acol + width_cells >= right {
+                break;
+            }
         }
     }
 
     // Tilde markers for screen rows past end of buffer.
     for row in (visrows.len() as u16)..layout.text_rows {
         if layout.gutter > 0 {
-            screen.put_str(0, row, "~", theme.line_number, theme.background, false, false);
+            screen.put_str(0, layout.text_y() + row, "~", theme.line_number, theme.background, false, false);
         }
+    }
+
+    // Tab-stop ruler (above the text area).
+    if layout.ruler {
+        let base_col = if settings.soft_wrap { 0 } else { app.left_col };
+        draw_ruler(screen, &layout, app, base_col);
     }
 
     // --- cursors (drawn over text) ----------------------------------------
@@ -259,11 +303,11 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
             Some(r) => &visrows[r],
             None => continue,
         };
-        let k = off - vr.start;
-        if k >= text_width {
+        let dcol = buf.display_col(cl, off);
+        if dcol < vr.base_col || dcol - vr.base_col >= text_width {
             continue;
         }
-        let x = layout.text_x() + k as u16;
+        let x = layout.text_x() + (dcol - vr.base_col) as u16;
         let y = vr.y;
         if i == buf.primary {
             primary_screen_pos = Some((x, y));
@@ -285,6 +329,9 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     // --- overlays (drawn on top of everything) ----------------------------
     let overlay_cursor = if app.modal_open {
         super::modal::render(screen, app)
+    } else if app.help_panel.open {
+        super::help::render(screen, app);
+        None
     } else if app.settings_panel.open {
         super::settings::render(screen, app);
         None
@@ -299,7 +346,7 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     };
 
     // --- final cursor position --------------------------------------------
-    screen.cursor = if app.settings_panel.open || app.callout_panel.open || app.symbol_panel.open {
+    screen.cursor = if app.settings_panel.open || app.callout_panel.open || app.symbol_panel.open || app.help_panel.open {
         None // navigated with arrows; no text caret
     } else if app.modal_open {
         overlay_cursor
@@ -331,6 +378,67 @@ fn draw_gutter(screen: &mut Screen, layout: &Layout, app: &App, ln: usize, cur_l
     // Diagnostic marker in the leftmost gutter cell.
     if app.diagnostics.iter().any(|d| d.line == ln) {
         screen.set(0, y, Cell { ch: '●', fg: theme.tag, bg: theme.background, bold: true, italic: false });
+    }
+}
+
+/// The tab-stop ruler: a Word-style scale row above the text area. Dots mark
+/// columns, `+` every 5, numbers every 10; explicit stops draw as bold
+/// `L`/`R`/`C`/`D` glyphs at their column. `base_col` is the display column of
+/// the leftmost text cell (horizontal scroll offset; 0 under soft wrap).
+fn draw_ruler(screen: &mut Screen, layout: &Layout, app: &App, base_col: usize) {
+    let theme = &app.config.theme;
+    let width = layout.text_width() as usize;
+    if width == 0 {
+        return;
+    }
+
+    // Scale: dots, '+' at 5s, numbers right-aligned onto their 10s column.
+    let mut row: Vec<char> = (0..width)
+        .map(|x| {
+            let col = base_col + x;
+            if col % 10 == 0 { ' ' } else if col % 5 == 0 { '+' } else { '·' }
+        })
+        .collect();
+    for x in 0..width {
+        let col = base_col + x;
+        if col % 10 == 0 && col > 0 {
+            let s = col.to_string();
+            if let Some(start) = (x + 1).checked_sub(s.len()) {
+                for (i, c) in s.chars().enumerate() {
+                    row[start + i] = c;
+                }
+            }
+        }
+    }
+
+    // Blank the gutter part of the ruler row.
+    for x in 0..layout.gutter {
+        screen.set(x, 0, Cell { ch: ' ', fg: theme.line_number, bg: theme.background, bold: false, italic: false });
+    }
+    for (x, ch) in row.iter().enumerate() {
+        let sx = layout.text_x() + x as u16;
+        if sx >= layout.width {
+            break;
+        }
+        screen.set(sx, 0, Cell { ch: *ch, fg: theme.line_number, bg: theme.background, bold: false, italic: false });
+    }
+
+    // Explicit stops on top, as alignment glyphs.
+    for stop in app.active_buffer().tabstops().explicit() {
+        if stop.col < base_col || stop.col - base_col >= width {
+            continue;
+        }
+        let sx = layout.text_x() + (stop.col - base_col) as u16;
+        if sx >= layout.width {
+            continue;
+        }
+        let glyph = match stop.align {
+            crate::editor::tabstops::TabAlign::Left => 'L',
+            crate::editor::tabstops::TabAlign::Right => 'R',
+            crate::editor::tabstops::TabAlign::Center => 'C',
+            crate::editor::tabstops::TabAlign::Decimal => 'D',
+        };
+        screen.set(sx, 0, Cell { ch: glyph, fg: theme.heading, bg: theme.background, bold: true, italic: false });
     }
 }
 
@@ -615,13 +723,24 @@ fn draw_output_row(screen: &mut Screen, layout: &Layout, app: &App, y: u16, role
         }
         OutputRole::Body => {
             screen.set(x0, y, dim('│'));
-            for (k, col) in (seg_start..seg_end).enumerate() {
-                let x = x0 + 2 + k as u16;
-                if x >= right {
-                    break;
+            // Tab-expanded layout, columns anchored to the line's own grid (the
+            // row's first visible char draws at the card's content origin).
+            let tabstops = app.active_buffer().tabstops();
+            let (spans, _) = tabstops.spans(chars);
+            let base = spans.get(seg_start).map(|s| s.col).unwrap_or(0);
+            'cells: for col in seg_start..seg_end.min(chars.len()) {
+                let ch = chars[col];
+                let sp = spans[col];
+                let is_tab = ch == '\t';
+                let leader = if is_tab { tabstops.leader_at(sp.col) } else { None };
+                for cell in 0..sp.width {
+                    let x = x0 as usize + 2 + (sp.col + cell - base);
+                    if x >= right as usize {
+                        break 'cells;
+                    }
+                    let dch = if is_tab { leader.unwrap_or(' ') } else { ch };
+                    screen.set(x as u16, y, Cell { ch: dch, fg: theme.foreground, bg: card_bg, bold: false, italic: true });
                 }
-                let ch = chars.get(col).copied().unwrap_or(' ');
-                screen.set(x, y, Cell { ch, fg: theme.foreground, bg: card_bg, bold: false, italic: true });
             }
             if right > x0 {
                 screen.set(right, y, dim('│'));
@@ -707,18 +826,32 @@ fn draw_callout_card_row(
                     raw >= seg_start && raw < seg_end
                 })
                 .collect();
-            let mut x = cx;
-            for g in seg {
-                if x >= right {
-                    break;
-                }
+            // Lay the glyphs out with tab expansion. Columns are measured from
+            // the card's content origin, so stops apply to the *visible*
+            // (concealed) text — a table inside a callout aligns at the same
+            // stops as one outside. Header rows start past the icon/type
+            // prefix, hence the non-zero start column.
+            let content_x = x0 + 2;
+            let start_col = (cx - content_x) as usize;
+            let tabstops = app.active_buffer().tabstops();
+            let chars: Vec<char> = seg.iter().map(|g| g.ch).collect();
+            let (spans, _) = tabstops.spans_from(&chars, start_col);
+            'glyphs: for (i, g) in seg.iter().enumerate() {
                 let (fg, bold) = if g.kind == StyleKind::Default {
                     (theme.foreground, header)
                 } else {
                     (theme.color_for(g.kind), g.bold)
                 };
-                screen.set(x, y, Cell { ch: g.ch, fg, bg: card_bg, bold, italic: g.italic });
-                x += 1;
+                let is_tab = g.ch == '\t';
+                let leader = if is_tab { tabstops.leader_at(spans[i].col) } else { None };
+                for cell in 0..spans[i].width {
+                    let x = content_x as usize + spans[i].col + cell;
+                    if x >= right as usize {
+                        break 'glyphs;
+                    }
+                    let ch = if is_tab { leader.unwrap_or(' ') } else { g.ch };
+                    screen.set(x as u16, y, Cell { ch, fg, bg: card_bg, bold, italic: g.italic });
+                }
             }
         }
     }

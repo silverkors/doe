@@ -45,6 +45,9 @@ pub struct Settings {
     /// Drag (one-finger touch) scrolls the document instead of selecting text.
     /// Useful over SSH/tmux on touch clients (e.g. Termius).
     pub touch_scroll: bool,
+    /// Show the tab-stop ruler row above the text area (click to set stops,
+    /// click a stop to cycle its alignment, right-click to remove).
+    pub show_tab_ruler: bool,
 }
 
 impl Default for Settings {
@@ -62,6 +65,7 @@ impl Default for Settings {
             trim_trailing_whitespace_on_save: false,
             render_callouts: true,
             touch_scroll: false,
+            show_tab_ruler: false,
         }
     }
 }
@@ -201,7 +205,7 @@ fn config_base_dir() -> PathBuf {
 
 /// Built-in keybindings so DOE is usable out of the box. DOE is modeless, so
 /// there is a single `global` binding context (no Vim-style modes).
-fn default_keybindings() -> Keybindings {
+pub fn default_keybindings() -> Keybindings {
     let binds: &[(&str, &str)] = &[
         ("ctrl-p", "command_palette"),
         ("ctrl-t", "open_buffers"),
@@ -255,12 +259,18 @@ fn default_keybindings() -> Keybindings {
         ("shift-right", "extend_right"),
         ("shift-up", "extend_up"),
         ("shift-down", "extend_down"),
+        ("f1", "help"),
         ("f3", "find_next"),
         ("shift-f3", "find_prev"),
         ("esc", "clear_extra_cursors"),
         ("enter", "newline"),
         ("backspace", "backspace"),
         ("delete", "delete"),
+        // Delete previous/next word: Alt on mac, Ctrl on PC — both bound.
+        ("alt-backspace", "delete_word_left"),
+        ("ctrl-backspace", "delete_word_left"),
+        ("alt-delete", "delete_word_right"),
+        ("ctrl-delete", "delete_word_right"),
         ("tab", "tab"),
     ];
 
