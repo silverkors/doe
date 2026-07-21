@@ -17,14 +17,6 @@ pub enum PromptKind {
     /// A prompt to send to the default chat AI provider; the reply streams into
     /// the buffer at the cursor.
     AiChat,
-    /// AI panel: add a provider by preset kind.
-    AiAddKind,
-    /// AI panel: set the selected provider's API key.
-    AiSetKey,
-    /// AI panel: set the selected provider's model.
-    AiSetModel,
-    /// AI panel: set the selected provider's base URL.
-    AiSetBaseUrl,
     /// Closing a modified buffer: Save / Discard / Cancel. Not a text prompt —
     /// the command-line key handler intercepts s/d/c instead of inserting.
     ConfirmClose,
@@ -40,10 +32,6 @@ impl PromptKind {
             PromptKind::SaveAs => "save as: ",
             PromptKind::ImportCallouts => "import callouts from (vault or data.json): ",
             PromptKind::AiChat => "ai: ",
-            PromptKind::AiAddKind => "add provider kind (anthropic/openai/openrouter/xai/groq/mistral/ollama/lmstudio/custom): ",
-            PromptKind::AiSetKey => "API key: ",
-            PromptKind::AiSetModel => "model: ",
-            PromptKind::AiSetBaseUrl => "base URL: ",
             PromptKind::ConfirmClose => "unsaved changes — [s]ave  [d]iscard  [c]ancel",
             PromptKind::ConfirmTrust => "run code in this folder? [o]nce  [a]lways  [n]ever",
         }

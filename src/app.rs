@@ -99,8 +99,6 @@ pub struct App {
     ai_jobs: std::collections::HashMap<u64, AiJob>,
     /// The AI providers configuration panel.
     pub ai_panel: crate::ui::ai_panel::AiPanel,
-    /// Provider name a pending key/model/base-url prompt is editing.
-    ai_edit_target: Option<String>,
 }
 
 /// A running AI request and where its streamed output goes.
@@ -251,7 +249,6 @@ impl App {
             ai_rx,
             ai_jobs: std::collections::HashMap::new(),
             ai_panel: crate::ui::ai_panel::AiPanel::default(),
-            ai_edit_target: None,
         };
         app.sync_tab_width();
         if !ai_warnings.is_empty() {
@@ -969,6 +966,17 @@ impl App {
     }
 
     fn handle_ai_panel_key(&mut self, ev: KeyEvent) {
+        use crate::ui::ai_panel::Mode;
+        match self.ai_panel.mode() {
+            Mode::List => self.handle_ai_list_key(ev),
+            Mode::PickKind => self.handle_ai_pick_key(ev),
+            Mode::Form => self.handle_ai_form_key(ev),
+        }
+    }
+
+    /// List mode: navigate providers, add/edit/remove, set the chat default.
+    fn handle_ai_list_key(&mut self, ev: KeyEvent) {
+        use crate::ui::ai_panel::Mode;
         use crossterm::event::KeyCode::*;
         let names = crate::ui::ai_panel::provider_names(&self.config.ai);
         let len = crate::ui::ai_panel::AiPanel::row_count(&self.config.ai);
@@ -981,29 +989,25 @@ impl App {
             }
             Up | BackTab => self.ai_panel.move_selection(-1, len),
             Down | Tab => self.ai_panel.move_selection(1, len),
-            Char('a') => self.ai_prompt(PromptKind::AiAddKind, None, ""),
-            Enter if on_add => self.ai_prompt(PromptKind::AiAddKind, None, ""),
+            Char('a') => {
+                self.ai_panel.kind_idx = 0;
+                self.ai_panel.set_mode(Mode::PickKind);
+            }
+            Enter if on_add => {
+                self.ai_panel.kind_idx = 0;
+                self.ai_panel.set_mode(Mode::PickKind);
+            }
             Enter => {
-                // Set the selected provider as the chat default.
                 let name = names[sel].clone();
                 self.config.ai.defaults.insert("chat".to_string(), name.clone());
                 self.rebuild_ai();
                 self.config.ai.save(&self.config.config_dir);
                 self.set_status(format!("AI: '{name}' is now the chat default"));
             }
-            Char('k') if !on_add => {
+            Char('e') if !on_add => {
                 let name = names[sel].clone();
-                self.ai_prompt(PromptKind::AiSetKey, Some(name), "")
-            }
-            Char('m') if !on_add => {
-                let name = names[sel].clone();
-                let prefill = self.config.ai.providers[&name].model.clone().unwrap_or_default();
-                self.ai_prompt(PromptKind::AiSetModel, Some(name), &prefill)
-            }
-            Char('u') if !on_add => {
-                let name = names[sel].clone();
-                let prefill = self.config.ai.providers[&name].base_url.clone().unwrap_or_default();
-                self.ai_prompt(PromptKind::AiSetBaseUrl, Some(name), &prefill)
+                let cfg = self.config.ai.providers[&name].clone();
+                self.ai_panel.start_edit(&name, &cfg);
             }
             Char('d') if !on_add => {
                 let name = names[sel].clone();
@@ -1020,99 +1024,129 @@ impl App {
         }
     }
 
-    /// Close the panel and open a command-line prompt for an AI field edit,
-    /// remembering which provider it targets. The panel reopens when the prompt
-    /// is submitted or cancelled.
-    fn ai_prompt(&mut self, kind: PromptKind, target: Option<String>, prefill: &str) {
-        self.ai_edit_target = target;
-        self.ai_panel.close();
-        self.open_prompt(kind, prefill);
-    }
-
-    /// Apply a submitted AI-panel prompt, then reopen the panel.
-    fn apply_ai_prompt(&mut self, kind: PromptKind, input: String) {
-        match kind {
-            PromptKind::AiAddKind => {
-                let kind_name = input.trim().to_lowercase();
-                if kind_name.is_empty() {
-                    self.ai_panel.open = true;
-                    return;
-                }
-                let known = crate::ai::presets::KNOWN_KINDS.contains(&kind_name.as_str());
-                if !known {
-                    self.set_status(format!(
-                        "AI: unknown kind '{kind_name}' — known: {}",
-                        crate::ai::presets::KNOWN_KINDS.join(", ")
-                    ));
-                    self.ai_panel.open = true;
-                    return;
-                }
-                // Unique instance name derived from the kind.
-                let mut name = kind_name.clone();
-                let mut n = 2;
-                while self.config.ai.providers.contains_key(&name) {
-                    name = format!("{kind_name}{n}");
-                    n += 1;
-                }
-                let needs_key = crate::ai::presets::preset(&kind_name)
-                    .map(|p| p.needs_key)
-                    .unwrap_or(true);
-                self.config.ai.providers.insert(
-                    name.clone(),
-                    crate::ai::config::ProviderCfg {
-                        kind: kind_name,
-                        api_key: None,
-                        api_key_env: None,
-                        base_url: None,
-                        model: None,
-                        capabilities: None,
-                        protocol: None,
-                    },
-                );
-                // First provider becomes the chat default automatically.
-                self.config.ai.defaults.entry("chat".to_string()).or_insert_with(|| name.clone());
-                self.config.ai.save(&self.config.config_dir);
-                self.rebuild_ai();
-                // Select the new provider; chain straight into a key prompt if
-                // the preset needs one.
-                let idx = crate::ui::ai_panel::provider_names(&self.config.ai)
-                    .iter()
-                    .position(|p| p == &name)
-                    .unwrap_or(0);
-                self.ai_panel.selected = idx;
-                if needs_key {
-                    self.ai_prompt(PromptKind::AiSetKey, Some(name), "");
-                } else {
-                    self.ai_panel.open = true;
-                }
-            }
-            PromptKind::AiSetKey | PromptKind::AiSetModel | PromptKind::AiSetBaseUrl => {
-                if let Some(name) = self.ai_edit_target.take() {
-                    if let Some(pc) = self.config.ai.providers.get_mut(&name) {
-                        let val = input.trim().to_string();
-                        let field = match kind {
-                            PromptKind::AiSetKey => {
-                                pc.api_key = (!val.is_empty()).then_some(val);
-                                "key"
-                            }
-                            PromptKind::AiSetModel => {
-                                pc.model = (!val.is_empty()).then_some(val);
-                                "model"
-                            }
-                            _ => {
-                                pc.base_url = (!val.is_empty()).then_some(val);
-                                "base_url"
-                            }
-                        };
-                        self.set_status(format!("AI: {name} {field} updated"));
-                    }
-                    self.config.ai.save(&self.config.config_dir);
-                    self.rebuild_ai();
-                }
-                self.ai_panel.open = true;
+    /// PickKind dialog: choose which provider kind to add.
+    fn handle_ai_pick_key(&mut self, ev: KeyEvent) {
+        use crate::ui::ai_panel::{Mode, KINDS};
+        use crossterm::event::KeyCode::*;
+        match ev.code {
+            Esc => self.ai_panel.set_mode(Mode::List),
+            Up | BackTab => self.ai_panel.move_kind(-1),
+            Down | Tab => self.ai_panel.move_kind(1),
+            Enter => {
+                let kind = KINDS[self.ai_panel.kind_idx.min(KINDS.len() - 1)].0;
+                self.ai_panel.start_add(kind);
             }
             _ => {}
         }
+    }
+
+    /// Form: edit fields inline, save or cancel.
+    fn handle_ai_form_key(&mut self, ev: KeyEvent) {
+        use crate::ui::ai_panel::Mode;
+        use crossterm::event::KeyCode::*;
+        match ev.code {
+            Esc => {
+                self.ai_panel.form = None;
+                self.ai_panel.set_mode(Mode::List);
+            }
+            Enter => self.save_ai_form(),
+            Up | BackTab => {
+                if let Some(f) = self.ai_panel.form.as_mut() {
+                    f.move_focus(-1);
+                }
+            }
+            Down | Tab => {
+                if let Some(f) = self.ai_panel.form.as_mut() {
+                    f.move_focus(1);
+                }
+            }
+            Backspace => {
+                if let Some(f) = self.ai_panel.form.as_mut() {
+                    let field = f.focused();
+                    f.value_mut(field).pop();
+                }
+            }
+            _ => {
+                if let Some(ch) = keymap::printable_char(&ev) {
+                    if let Some(f) = self.ai_panel.form.as_mut() {
+                        let field = f.focused();
+                        f.value_mut(field).push(ch);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Validate the form and write the provider into the config (add or edit),
+    /// preserving fields the form doesn't manage (env key, capabilities) on an
+    /// edit. Then rebuild the dispatcher and return to the list.
+    fn save_ai_form(&mut self) {
+        use crate::ui::ai_panel::Mode;
+        let Some(form) = self.ai_panel.form.as_ref() else { return };
+        let name = form.name.trim().to_string();
+        if name.is_empty() {
+            self.set_status("AI: name required");
+            return;
+        }
+        let editing = form.editing.clone();
+        let renaming = editing.as_deref().map(|o| o != name).unwrap_or(false);
+        if self.config.ai.providers.contains_key(&name) && editing.as_deref() != Some(name.as_str()) {
+            self.set_status(format!("AI: '{name}' already exists"));
+            return;
+        }
+        let is_custom = form.kind == "custom";
+        let key = form.key.trim().to_string();
+        let model = form.model.trim().to_string();
+        let base_url = form.base_url.trim().to_string();
+        let protocol = form.protocol.trim().to_lowercase();
+
+        // Start from the existing entry when editing so unmanaged fields survive.
+        let mut cfg = editing
+            .as_ref()
+            .and_then(|o| self.config.ai.providers.get(o).cloned())
+            .unwrap_or(crate::ai::config::ProviderCfg {
+                kind: form.kind.clone(),
+                api_key: None,
+                api_key_env: None,
+                base_url: None,
+                model: None,
+                capabilities: None,
+                protocol: None,
+            });
+        cfg.kind = form.kind.clone();
+        cfg.model = (!model.is_empty()).then_some(model);
+        if !key.is_empty() {
+            cfg.api_key = Some(key);
+            cfg.api_key_env = None; // inline key supersedes an env var
+        } else {
+            cfg.api_key = None; // a blank key keeps any existing api_key_env
+        }
+        if is_custom {
+            cfg.base_url = (!base_url.is_empty()).then_some(base_url);
+            cfg.protocol = Some(if protocol == "anthropic" { "anthropic".into() } else { "openai".into() });
+        }
+
+        if renaming {
+            if let Some(old) = &editing {
+                self.config.ai.providers.remove(old);
+                if self.config.ai.defaults.get("chat") == Some(old) {
+                    self.config.ai.defaults.insert("chat".to_string(), name.clone());
+                }
+            }
+        }
+        self.config.ai.providers.insert(name.clone(), cfg);
+        self.config.ai.defaults.entry("chat".to_string()).or_insert_with(|| name.clone());
+        self.config.ai.save(&self.config.config_dir);
+        self.rebuild_ai();
+
+        let idx = crate::ui::ai_panel::provider_names(&self.config.ai)
+            .iter()
+            .position(|p| p == &name)
+            .unwrap_or(0);
+        self.ai_panel.selected = idx;
+        self.ai_panel.form = None;
+        self.ai_panel.set_mode(Mode::List);
+        self.set_status(format!("AI: saved '{name}'"));
     }
 
     /// Rebuild the provider registry and dispatcher from the current config so
@@ -1328,12 +1362,6 @@ impl App {
                 if !input.is_empty() {
                     self.start_ai_chat(input, crate::ai::Sink::Buffer);
                 }
-            }
-            Some(k @ (PromptKind::AiAddKind
-            | PromptKind::AiSetKey
-            | PromptKind::AiSetModel
-            | PromptKind::AiSetBaseUrl)) => {
-                self.apply_ai_prompt(k, input);
             }
             // Confirm prompts are handled by handle_confirm_key, not here.
             Some(PromptKind::ConfirmClose) | Some(PromptKind::ConfirmTrust) | None => {}
@@ -2330,6 +2358,40 @@ mod tests {
         b.set_text(text);
         b.language = crate::syntax::Language::Markdown;
         app
+    }
+
+    #[test]
+    fn ai_panel_renders_in_all_modes_without_panic() {
+        use crate::ui::ai_panel::Mode;
+        use crate::ui::screen::Screen;
+        use crossterm::style::Color;
+        let mut app = markdown_app("");
+        app.resize(100, 40);
+        app.config.ai.providers.insert(
+            "claude".into(),
+            crate::ai::config::ProviderCfg {
+                kind: "anthropic".into(),
+                api_key: Some("k".into()),
+                api_key_env: None,
+                base_url: None,
+                model: Some("claude-opus-4-8".into()),
+                capabilities: None,
+                protocol: None,
+            },
+        );
+        let mut screen = Screen::new();
+        let render = |screen: &mut Screen, app: &App| {
+            screen.begin(app.width, app.height, Color::Reset, Color::Reset);
+            crate::ui::ai_panel::render(screen, app);
+        };
+        app.ai_panel.open(); // List
+        render(&mut screen, &app);
+        app.ai_panel.set_mode(Mode::PickKind);
+        render(&mut screen, &app);
+        app.ai_panel.start_add("custom"); // Form
+        render(&mut screen, &app);
+        app.ai_panel.start_add("ollama"); // keyless Form
+        render(&mut screen, &app);
     }
 
     #[test]
