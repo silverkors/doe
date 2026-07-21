@@ -30,6 +30,7 @@ pub enum Command {
     Delete,
     DeleteWordLeft,
     DeleteWordRight,
+    DeleteLine,
     Undo,
     Redo,
     Tab,
@@ -107,6 +108,9 @@ pub enum Command {
     // Dynamic documents
     RunCodeBlock,
     RunDocument,
+
+    // AI
+    AiPrompt,
 
     // Misc
     #[allow(dead_code)]

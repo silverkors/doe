@@ -47,6 +47,7 @@ const SECTIONS: &[(&str, &[(&str, &str)])] = &[
         ("delete", "Delete next char"),
         ("delete_word_left", "Delete previous word"),
         ("delete_word_right", "Delete next word"),
+        ("delete_line", "Delete line"),
         ("toggle_comment", "Toggle line comment"),
         ("toggle_bold", "Markdown: bold"),
         ("toggle_italic", "Markdown: italic"),
@@ -90,6 +91,9 @@ const SECTIONS: &[(&str, &[(&str, &str)])] = &[
     ]),
     ("Dynamic documents", &[
         ("run_code_block", "Run code block"),
+    ]),
+    ("AI", &[
+        ("ai", "Prompt AI (reply streams into the buffer)"),
     ]),
 ];
 

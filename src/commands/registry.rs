@@ -33,6 +33,7 @@ pub fn parse(input: &str) -> Option<Command> {
         "delete" => Command::Delete,
         "delete_word_left" | "delete_word" => Command::DeleteWordLeft,
         "delete_word_right" => Command::DeleteWordRight,
+        "delete_line" => Command::DeleteLine,
 
         "toggle_bold" => Command::ToggleBold,
         "toggle_italic" => Command::ToggleItalic,
@@ -105,6 +106,7 @@ pub fn parse(input: &str) -> Option<Command> {
         "import_callouts" | "import_obsidian_callouts" => Command::ImportObsidianCallouts,
         "run_code_block" | "run_block" => Command::RunCodeBlock,
         "run_document" | "run_all" => Command::RunDocument,
+        "ai" | "ai_prompt" => Command::AiPrompt,
         "expand_selection" => Command::ExpandSelection,
         "shrink_selection" => Command::ShrinkSelection,
         "go_to_symbol" | "symbols" | "outline" => Command::GoToSymbol,

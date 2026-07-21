@@ -545,6 +545,33 @@ impl Buffer {
         self.insert_at_cursors(s, false);
     }
 
+    /// Splice `text` into the rope at char position `pos`, independent of the
+    /// cursors, returning the position just past the inserted text. Cursors at
+    /// or after `pos` shift right by the inserted length. Used to stream AI
+    /// output into the document without hijacking the user's cursor; pass
+    /// `fresh = true` on the first chunk to open a new undo group and `false`
+    /// on the rest so the whole stream collapses into one undo step.
+    pub fn splice_at(&mut self, pos: usize, text: &str, fresh: bool) -> usize {
+        if text.is_empty() {
+            return pos.min(self.rope.len_chars());
+        }
+        self.record(!fresh);
+        let pos = pos.min(self.rope.len_chars());
+        self.rope.insert(pos, text);
+        let n = text.chars().count();
+        for c in &mut self.cursors {
+            if c.head >= pos {
+                c.head += n;
+            }
+            if c.anchor >= pos {
+                c.anchor += n;
+            }
+        }
+        self.mark_modified();
+        self.normalize();
+        pos + n
+    }
+
     pub fn insert_newline(&mut self, auto_indent: bool) {
         self.record(false);
         let edits = self
@@ -682,6 +709,38 @@ impl Buffer {
                 } else {
                     (c.head, self.word_boundary_right(c.head))
                 }
+            })
+            .collect();
+        Self::clip_overlaps(&mut ranges);
+        let edits =
+            ranges.into_iter().map(|(s, e)| Edit { start: s, end: e, text: String::new() }).collect();
+        self.apply_edits(edits);
+    }
+
+    /// Delete the whole line under each cursor, including its trailing newline
+    /// (Ctrl+Shift+K). On the last line, which has no trailing newline, the
+    /// preceding newline is swallowed instead so no empty line is left behind.
+    /// A selection is ignored — the line(s) the cursors sit on are removed.
+    pub fn delete_line(&mut self) {
+        self.record(false);
+        let len = self.rope.len_chars();
+        let last_line = self.rope.len_lines().saturating_sub(1);
+        let mut ranges: Vec<(usize, usize)> = self
+            .cursors
+            .iter()
+            .map(|c| {
+                let (line, _) = self.pos_to_line_col(c.head);
+                let mut start = self.rope.line_to_char(line);
+                let end = if line < last_line {
+                    self.rope.line_to_char(line + 1)
+                } else {
+                    // Last line: no newline after it; take the one before instead.
+                    if start > 0 {
+                        start -= 1;
+                    }
+                    len
+                };
+                (start, end)
             })
             .collect();
         Self::clip_overlaps(&mut ranges);
@@ -1369,6 +1428,25 @@ mod tests {
         b.cursors = vec![Cursor::new(3), Cursor::new(6)];
         b.delete_word_left();
         assert_eq!(b.rope.to_string(), " x");
+    }
+
+    #[test]
+    fn delete_line_removes_whole_line() {
+        // Middle line: content and its trailing newline go together.
+        let mut b = buf("one\ntwo\nthree");
+        b.cursors = vec![Cursor::new(5)]; // inside "two"
+        b.delete_line();
+        assert_eq!(b.rope.to_string(), "one\nthree");
+        // Last line: the preceding newline is swallowed, no empty line left.
+        let mut b = buf("one\ntwo");
+        b.cursors = vec![Cursor::new(6)]; // inside "two"
+        b.delete_line();
+        assert_eq!(b.rope.to_string(), "one");
+        // Two cursors on the same line delete it exactly once.
+        let mut b = buf("aa\nbb\ncc");
+        b.cursors = vec![Cursor::new(3), Cursor::new(4)]; // both on "bb"
+        b.delete_line();
+        assert_eq!(b.rope.to_string(), "aa\ncc");
     }
 
     #[test]

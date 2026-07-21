@@ -5,6 +5,7 @@
 //! architecture. This file wires up the terminal, runs the event loop and
 //! guarantees the terminal is restored even on panic.
 
+mod ai;
 mod app;
 mod commands;
 mod config;
@@ -125,8 +126,11 @@ fn run(app: &mut App) -> Result<()> {
         }
 
         // Poll so we can periodically check for external file changes while
-        // still blocking (no busy-loop) when nothing is happening.
-        if event::poll(Duration::from_millis(500))? {
+        // still blocking (no busy-loop) when nothing is happening. While an AI
+        // reply is streaming, poll far more often so its output appears live.
+        let timeout =
+            if app.ai_busy() { Duration::from_millis(30) } else { Duration::from_millis(500) };
+        if event::poll(timeout)? {
             match event::read()? {
                 Event::Key(key) => {
                     // Ignore key-release events (reported by some terminals).
@@ -141,9 +145,12 @@ fn run(app: &mut App) -> Result<()> {
                 }
                 _ => {}
             }
-        } else {
+        } else if !app.ai_busy() {
             app.check_external_changes();
         }
+
+        // Splice any streamed AI output into the buffer before the next redraw.
+        app.drain_ai();
 
         // Throttled invisible autosave to the recovery store. Skipped when
         // quitting so a clean exit's recovery cleanup is not re-created.

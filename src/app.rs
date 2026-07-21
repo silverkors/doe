@@ -91,6 +91,26 @@ pub struct App {
     /// Centre the viewport on the cursor at the first real resize — set when a
     /// remembered position was restored (terminal size is unknown in `new`).
     pending_center: bool,
+    /// AI provider dispatcher (runs requests off the render loop).
+    ai: crate::ai::Dispatcher,
+    /// Channel the dispatcher streams `(request_id, chunk)` on; drained each tick.
+    ai_rx: std::sync::mpsc::Receiver<(u64, crate::ai::Chunk)>,
+    /// In-flight AI requests, keyed by request id.
+    ai_jobs: std::collections::HashMap<u64, AiJob>,
+}
+
+/// A running AI request and where its streamed output goes.
+struct AiJob {
+    /// Index of the target buffer.
+    buffer: usize,
+    /// Char position the next chunk splices at (advances as text streams in).
+    pos: usize,
+    /// Buffer vs. card streaming.
+    sink: crate::ai::Sink,
+    /// Whether the first chunk has been written (opens a fresh undo group).
+    started: bool,
+    /// Accumulated text (used for card sink, and shown in the status line).
+    acc: String,
 }
 
 /// Buffers larger than this are not backed up (autosaving a huge file on every
@@ -182,6 +202,11 @@ impl App {
                 restored_any = true;
             }
         }
+        // Build the AI provider registry from config before `config` is moved
+        // into the struct; surface any provider warnings once on the status line.
+        let (ai_registry, ai_warnings) = crate::ai::config::build(&config.ai);
+        let (ai, ai_rx) = crate::ai::Dispatcher::new(ai_registry);
+
         let mut app = App {
             config,
             buffers,
@@ -218,8 +243,14 @@ impl App {
             positions,
             help_panel: crate::ui::help::HelpPanel::default(),
             pending_center: restored_any,
+            ai,
+            ai_rx,
+            ai_jobs: std::collections::HashMap::new(),
         };
         app.sync_tab_width();
+        if !ai_warnings.is_empty() {
+            app.set_status(ai_warnings.join("; "));
+        }
 
         // Load sandboxed WASM modules from <config>/plugins/*.wasm — those that
         // export `doe_eval` register as document evaluators, the rest as plugins.
@@ -344,6 +375,102 @@ impl App {
             }
         }
         self.top_in_code_block = in_block;
+    }
+
+    /// Whether any AI request is streaming. The main loop polls faster while
+    /// this is true so output appears live.
+    pub fn ai_busy(&self) -> bool {
+        !self.ai_jobs.is_empty()
+    }
+
+    /// Kick off an AI chat request, streaming the reply into the given sink.
+    /// The current selection (if any) is prepended as context. `sink` lets the
+    /// caller choose live buffer insertion or a deferred card.
+    fn start_ai_chat(&mut self, prompt: String, sink: crate::ai::Sink) {
+        use crate::ai::{AiRequest, Message, Payload};
+        let user = match self.active_buffer().primary_selection_text() {
+            Some(sel) if !sel.trim().is_empty() => format!("{sel}\n\n{prompt}"),
+            _ => prompt,
+        };
+        // Buffer sink streams at the primary cursor; card sink accumulates and
+        // splices on completion (at the same anchor).
+        let pos = self.active_buffer().primary_cursor().head;
+        let req = AiRequest {
+            provider: None,
+            capability: crate::ai::cap::CHAT.to_string(),
+            model: None,
+            sink,
+            payload: Payload::Chat {
+                system: None,
+                messages: vec![Message { role: "user".into(), content: user }],
+                stream: true,
+            },
+        };
+        match self.ai.submit(req) {
+            Ok(id) => {
+                self.ai_jobs.insert(
+                    id,
+                    AiJob { buffer: self.active, pos, sink, started: false, acc: String::new() },
+                );
+                self.set_status("AI: streaming…");
+            }
+            Err(e) => self.set_status(format!("AI: {e}")),
+        }
+    }
+
+    /// Drain any queued AI chunks and route them to their jobs. Returns whether
+    /// anything was applied (so the main loop can redraw). Called each tick.
+    pub fn drain_ai(&mut self) -> bool {
+        // Collect first so we don't hold a borrow on the receiver while mutating
+        // buffers/jobs.
+        let mut pending: Vec<(u64, crate::ai::Chunk)> = Vec::new();
+        while let Ok(msg) = self.ai_rx.try_recv() {
+            pending.push(msg);
+        }
+        if pending.is_empty() {
+            return false;
+        }
+        use crate::ai::{Chunk, Sink};
+        let mut changed = false;
+        for (id, chunk) in pending {
+            let Some(job) = self.ai_jobs.get_mut(&id) else { continue };
+            match chunk {
+                Chunk::Text(t) => {
+                    job.acc.push_str(&t);
+                    if job.sink == Sink::Buffer {
+                        let (bi, pos, fresh) = (job.buffer, job.pos, !job.started);
+                        job.started = true;
+                        if let Some(b) = self.buffers.get_mut(bi) {
+                            let new_pos = b.splice_at(pos, &t, fresh);
+                            if let Some(job) = self.ai_jobs.get_mut(&id) {
+                                job.pos = new_pos;
+                            }
+                        }
+                        changed = true;
+                    }
+                }
+                Chunk::Done => {
+                    if let Some(job) = self.ai_jobs.remove(&id) {
+                        if job.sink == Sink::Card && !job.acc.is_empty() {
+                            if let Some(b) = self.buffers.get_mut(job.buffer) {
+                                b.splice_at(job.pos, &job.acc, true);
+                            }
+                        }
+                        changed = true;
+                    }
+                    self.set_status("AI: done");
+                }
+                Chunk::Error(e) => {
+                    self.ai_jobs.remove(&id);
+                    self.set_status(format!("AI: {e}"));
+                    changed = true;
+                }
+                Chunk::Image(_) | Chunk::Json(_) => {
+                    // Not handled by the chat sink yet (phase 2).
+                }
+            }
+        }
+        changed
     }
 
     /// Detect external modification of the active file (called between input
@@ -1026,6 +1153,11 @@ impl App {
                     self.do_import_callouts(&input);
                 }
             }
+            Some(PromptKind::AiChat) => {
+                if !input.is_empty() {
+                    self.start_ai_chat(input, crate::ai::Sink::Buffer);
+                }
+            }
             // Confirm prompts are handled by handle_confirm_key, not here.
             Some(PromptKind::ConfirmClose) | Some(PromptKind::ConfirmTrust) | None => {}
         }
@@ -1269,6 +1401,10 @@ impl App {
                 self.active_buffer_mut().delete_word_right();
                 edited = true;
             }
+            Command::DeleteLine => {
+                self.active_buffer_mut().delete_line();
+                edited = true;
+            }
             Command::Tab => {
                 let (sp, tw) = (self.config.settings.insert_spaces, self.config.settings.tab_width);
                 self.active_buffer_mut().insert_tab(sp, tw);
@@ -1424,6 +1560,7 @@ impl App {
             Command::ImportObsidianCallouts => self.import_obsidian_callouts(),
             Command::RunCodeBlock => self.run_code(RunScope::Block),
             Command::RunDocument => self.run_code(RunScope::Document),
+            Command::AiPrompt => self.open_prompt(PromptKind::AiChat, ""),
             Command::ExpandSelection => self.expand_selection(),
             Command::ShrinkSelection => self.shrink_selection(),
             Command::GoToSymbol => self.open_symbol_outline(),

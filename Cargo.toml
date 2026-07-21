@@ -26,6 +26,7 @@ tree-sitter-json = "0.24.8"
 tree-sitter-css = "0.25.0"
 tree-sitter-html = "0.23.2"
 serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
 wasmi = "1.1.0"
 mlua = { version = "0.11.6", features = ["lua54", "vendored"] }
 

@@ -20,6 +20,8 @@ pub struct Config {
     pub keybindings: Keybindings,
     pub theme: Theme,
     pub callouts: Callouts,
+    /// AI provider configuration (the `[ai]` table).
+    pub ai: crate::ai::config::AiConfig,
     /// Base config directory; used for theme loading and recovery/usage stores.
     pub config_dir: PathBuf,
     /// The user's own keybinding overrides (raw, for round-tripping on save).
@@ -110,6 +112,7 @@ impl Config {
         let mut settings = Settings::default();
         let mut keybindings = default_keybindings();
         let mut user_keybindings: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut ai = crate::ai::config::AiConfig::default();
 
         if let Ok(text) = std::fs::read_to_string(&config_path) {
             // Top-level scalar keys → Settings (the [keybindings] table is an
@@ -121,6 +124,9 @@ impl Config {
                 user_keybindings = kb.keybindings.clone();
                 keybindings.merge(kb.keybindings);
             }
+            if let Ok(f) = toml::from_str::<crate::ai::config::AiFile>(&text) {
+                ai = f.ai;
+            }
         } else {
             // First run: scaffold config + default theme (best effort).
             scaffold(&config_dir);
@@ -129,7 +135,7 @@ impl Config {
         let theme = Theme::load(&settings.theme, &config_dir.join("themes"));
         let callouts = Callouts::load(&config_dir);
 
-        Config { settings, keybindings, theme, callouts, config_dir, user_keybindings }
+        Config { settings, keybindings, theme, callouts, ai, config_dir, user_keybindings }
     }
 
     /// Persist callout styles to `callouts.toml`.
@@ -271,6 +277,7 @@ pub fn default_keybindings() -> Keybindings {
         ("ctrl-backspace", "delete_word_left"),
         ("alt-delete", "delete_word_right"),
         ("ctrl-delete", "delete_word_right"),
+        ("ctrl-shift-k", "delete_line"),
         ("tab", "tab"),
     ];
 
@@ -321,6 +328,36 @@ trim_trailing_whitespace_on_save = false
 "ctrl-d" = "add_cursor_next_match"
 "ctrl-b" = "toggle_bold"
 "ctrl-i" = "toggle_italic"
+
+# AI providers. Pick a built-in `kind` and supply a key (or an env var) — the
+# base URL, default model and protocol are filled in for you. Known kinds:
+#   anthropic, openai, openrouter, xai (grok), groq, mistral, ollama, lmstudio
+# Use kind = "custom" (protocol = "openai" | "anthropic") to add your own and
+# fill in base_url/model yourself. Run `:ai <prompt>` to stream a reply into
+# the buffer; a selection is sent along as context.
+#
+# [ai.providers.claude]
+# kind = "anthropic"            # reads $ANTHROPIC_API_KEY by default
+# # model = "claude-fable-5"    # override the preset's default model
+#
+# [ai.providers.router]
+# kind = "openrouter"
+# api_key = "sk-or-..."         # inline key instead of an env var
+#
+# [ai.providers.local]
+# kind = "ollama"               # local, no key
+# model = "qwen2.5-coder"
+#
+# [ai.providers.house]
+# kind = "custom"
+# protocol = "openai"
+# base_url = "https://llm.internal/v1"
+# model = "house-7b"
+# api_key_env = "HOUSE_KEY"
+# capabilities = ["chat"]
+#
+# [ai.defaults]
+# chat = "claude"               # provider used when a request names none
 "##;
 
 const DEFAULT_THEME_TOML: &str = r##"# DOE theme: default-dark

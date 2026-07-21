@@ -14,6 +14,9 @@ pub enum PromptKind {
     SaveAs,
     /// Path to an Obsidian vault / Callout Manager `data.json` to import.
     ImportCallouts,
+    /// A prompt to send to the default chat AI provider; the reply streams into
+    /// the buffer at the cursor.
+    AiChat,
     /// Closing a modified buffer: Save / Discard / Cancel. Not a text prompt —
     /// the command-line key handler intercepts s/d/c instead of inserting.
     ConfirmClose,
@@ -28,6 +31,7 @@ impl PromptKind {
             PromptKind::Replace => "replace (from|to): ",
             PromptKind::SaveAs => "save as: ",
             PromptKind::ImportCallouts => "import callouts from (vault or data.json): ",
+            PromptKind::AiChat => "ai: ",
             PromptKind::ConfirmClose => "unsaved changes — [s]ave  [d]iscard  [c]ancel",
             PromptKind::ConfirmTrust => "run code in this folder? [o]nce  [a]lways  [n]ever",
         }
