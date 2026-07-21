@@ -54,6 +54,7 @@ pub fn catalog() -> &'static [PaletteAction] {
         PaletteAction { command: "run_code_block", title: "Run Code Block", hint: "Alt+Enter" },
         PaletteAction { command: "run_document", title: "Run Document (all blocks)", hint: "" },
         PaletteAction { command: "ai", title: "AI: Prompt…", hint: "" },
+        PaletteAction { command: "ai_providers", title: "AI: Providers…", hint: "" },
         PaletteAction { command: "toggle_bold", title: "Markdown: Bold", hint: "Ctrl+B" },
         PaletteAction { command: "toggle_italic", title: "Markdown: Italic", hint: "Ctrl+I" },
         PaletteAction { command: "select_all", title: "Select All", hint: "Ctrl+A" },

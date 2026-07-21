@@ -95,6 +95,7 @@ const SECTIONS: &[(&str, &[(&str, &str)])] = &[
     ]),
     ("AI", &[
         ("ai", "Prompt AI (reply streams into the buffer)"),
+        ("ai_providers", "Configure AI providers"),
     ]),
 ];
 

@@ -341,12 +341,15 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
     } else if app.symbol_panel.open {
         super::symbols::render(screen, app);
         None
+    } else if app.ai_panel.open {
+        super::ai_panel::render(screen, app);
+        None
     } else {
         None
     };
 
     // --- final cursor position --------------------------------------------
-    screen.cursor = if app.settings_panel.open || app.callout_panel.open || app.symbol_panel.open || app.help_panel.open {
+    screen.cursor = if app.settings_panel.open || app.callout_panel.open || app.symbol_panel.open || app.help_panel.open || app.ai_panel.open {
         None // navigated with arrows; no text caret
     } else if app.modal_open {
         overlay_cursor

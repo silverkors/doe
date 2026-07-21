@@ -108,6 +108,7 @@ pub fn parse(input: &str) -> Option<Command> {
         "run_code_block" | "run_block" => Command::RunCodeBlock,
         "run_document" | "run_all" => Command::RunDocument,
         "ai" | "ai_prompt" => Command::AiPrompt,
+        "ai_providers" | "ai_config" => Command::AiProviders,
         "expand_selection" => Command::ExpandSelection,
         "shrink_selection" => Command::ShrinkSelection,
         "go_to_symbol" | "symbols" | "outline" => Command::GoToSymbol,

@@ -112,6 +112,7 @@ pub enum Command {
 
     // AI
     AiPrompt,
+    AiProviders,
 
     // Misc
     #[allow(dead_code)]

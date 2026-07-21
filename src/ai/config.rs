@@ -29,38 +29,58 @@
 
 use crate::ai::presets::{preset, Protocol};
 use crate::ai::{anthropic::AnthropicProvider, openai::OpenAiProvider, AiRegistry, Provider};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
-/// The `[ai]` table.
-#[derive(Debug, Clone, Default, Deserialize)]
+/// The `[ai]` table. Also serialised on its own to `ai.toml`, the file the
+/// in-editor AI provider panel reads and writes.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct AiConfig {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub providers: HashMap<String, ProviderCfg>,
     /// capability name -> provider instance name.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub defaults: HashMap<String, String>,
 }
 
 /// One `[ai.providers.<name>]` entry. Only `kind` is required; everything else
 /// falls back to the preset for that kind (or must be supplied for `custom`).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProviderCfg {
     pub kind: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_env: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Vec<String>>,
     /// For `custom`: `"openai"` or `"anthropic"`. Ignored when a preset applies.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<String>,
+}
+
+impl AiConfig {
+    /// Load the panel-managed `ai.toml`, if present and parseable.
+    pub fn load_file(config_dir: &Path) -> Option<AiConfig> {
+        let text = std::fs::read_to_string(config_dir.join("ai.toml")).ok()?;
+        toml::from_str::<AiConfig>(&text).ok()
+    }
+
+    /// Write the current configuration to `ai.toml` (best effort).
+    pub fn save(&self, config_dir: &Path) {
+        let _ = std::fs::create_dir_all(config_dir);
+        if let Ok(text) = toml::to_string(self) {
+            let header = "# DOE AI providers — managed by the in-editor AI panel\n\
+                          # (palette: \"AI: Providers…\"). Hand-edits are fine too.\n\n";
+            let _ = std::fs::write(config_dir.join("ai.toml"), format!("{header}{text}"));
+        }
+    }
 }
 
 /// Wrapper so the `[ai]` table can be pulled out of the same `config.toml` the
@@ -227,6 +247,35 @@ mod tests {
         let (registry, warnings) = build(&cfg);
         assert_eq!(warnings.len(), 1);
         assert!(registry.resolve(&chat_req(Some("oai"))).is_err());
+    }
+
+    #[test]
+    fn serialize_round_trips_through_ai_toml() {
+        // What the panel writes must parse back to the same providers/defaults.
+        let mut cfg = AiConfig::default();
+        cfg.providers.insert(
+            "claude".into(),
+            ProviderCfg {
+                kind: "anthropic".into(),
+                api_key: Some("sk-x".into()),
+                api_key_env: None,
+                base_url: None,
+                model: Some("claude-fable-5".into()),
+                capabilities: None,
+                protocol: None,
+            },
+        );
+        cfg.defaults.insert("chat".into(), "claude".into());
+        let text = toml::to_string(&cfg).unwrap();
+        let back: AiConfig = toml::from_str(&text).unwrap();
+        assert_eq!(back.providers.len(), 1);
+        let p = &back.providers["claude"];
+        assert_eq!(p.kind, "anthropic");
+        assert_eq!(p.model.as_deref(), Some("claude-fable-5"));
+        assert_eq!(p.api_key.as_deref(), Some("sk-x"));
+        // None fields are omitted from the file (skip_serializing_if).
+        assert!(!text.contains("base_url"));
+        assert_eq!(back.defaults.get("chat").map(String::as_str), Some("claude"));
     }
 
     #[test]

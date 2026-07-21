@@ -132,6 +132,12 @@ impl Config {
             scaffold(&config_dir);
         }
 
+        // The in-editor AI panel manages a dedicated `ai.toml`; when present it
+        // is authoritative over any `[ai]` block in config.toml.
+        if let Some(a) = crate::ai::config::AiConfig::load_file(&config_dir) {
+            ai = a;
+        }
+
         let theme = Theme::load(&settings.theme, &config_dir.join("themes"));
         let callouts = Callouts::load(&config_dir);
 
