@@ -278,6 +278,11 @@ pub fn default_keybindings() -> Keybindings {
         ("alt-delete", "delete_word_right"),
         ("ctrl-delete", "delete_word_right"),
         ("ctrl-shift-k", "delete_line"),
+        // Duplicate line: Ctrl+Shift+D everywhere; ⌘⇧D also, on terminals that
+        // deliver the Command key (Kitty/Ghostty/WezTerm) — most macOS
+        // terminals intercept ⌘, so Ctrl+Shift+D is the reliable one.
+        ("ctrl-shift-d", "duplicate_line"),
+        ("cmd-shift-d", "duplicate_line"),
         ("tab", "tab"),
     ];
 

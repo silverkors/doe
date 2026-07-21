@@ -749,6 +749,55 @@ impl Buffer {
         self.apply_edits(edits);
     }
 
+    /// Duplicate the whole line under each cursor, placing the copy directly
+    /// below (Ctrl+Shift+D / ⌘⇧D). Cursors stay on their original line — the
+    /// text shift keeps them in place, so a second press stacks another copy.
+    /// Lines shared by several cursors are duplicated once.
+    pub fn duplicate_line(&mut self) {
+        self.record(false);
+        let last_line = self.rope.len_lines().saturating_sub(1);
+        // Distinct lines under cursors, ascending.
+        let mut lines: Vec<usize> =
+            self.cursors.iter().map(|c| self.pos_to_line_col(c.head).0).collect();
+        lines.sort_unstable();
+        lines.dedup();
+
+        // (insert position in the *current* rope, text to insert). Duplicating
+        // below means inserting `content\n` at the next line's start; for the
+        // final line (no trailing newline) insert `\n content` at the end.
+        let mut inserts: Vec<(usize, String)> = Vec::with_capacity(lines.len());
+        for &l in &lines {
+            let start = self.rope.line_to_char(l);
+            let content: String =
+                self.rope.slice(start..start + self.line_len_chars(l)).to_string();
+            if l < last_line {
+                inserts.push((self.rope.line_to_char(l + 1), format!("{content}\n")));
+            } else {
+                inserts.push((self.rope.len_chars(), format!("\n{content}")));
+            }
+        }
+
+        // Shift each cursor by the length of every insert at or before it, so it
+        // stays on its original (now-upper) line. Compute before mutating.
+        let shift_for = |p: usize| -> usize {
+            inserts.iter().filter(|(pos, _)| *pos <= p).map(|(_, t)| t.chars().count()).sum()
+        };
+        let new_positions: Vec<(usize, usize)> =
+            self.cursors.iter().map(|c| (c.head + shift_for(c.head), c.anchor + shift_for(c.anchor))).collect();
+
+        // Apply inserts high-to-low so earlier offsets remain valid.
+        for (pos, text) in inserts.iter().rev() {
+            self.rope.insert(*pos, text);
+        }
+        for (c, (head, anchor)) in self.cursors.iter_mut().zip(new_positions) {
+            c.head = head;
+            c.anchor = anchor;
+            c.goal_col = None;
+        }
+        self.mark_modified();
+        self.normalize();
+    }
+
     /// Clip overlapping delete ranges (two cursors in the same word) so each
     /// char is deleted exactly once. Preserves index order for `apply_edits`.
     fn clip_overlaps(ranges: &mut [(usize, usize)]) {
@@ -1447,6 +1496,26 @@ mod tests {
         b.cursors = vec![Cursor::new(3), Cursor::new(4)]; // both on "bb"
         b.delete_line();
         assert_eq!(b.rope.to_string(), "aa\ncc");
+    }
+
+    #[test]
+    fn duplicate_line_copies_below() {
+        // Middle line duplicated directly below; cursor stays on the original.
+        let mut b = buf("one\ntwo\nthree");
+        b.cursors = vec![Cursor::new(5)]; // inside "two"
+        b.duplicate_line();
+        assert_eq!(b.rope.to_string(), "one\ntwo\ntwo\nthree");
+        assert_eq!(b.cursors[0].head, 5); // unmoved
+        // Last line (no trailing newline) duplicates below too.
+        let mut b = buf("a\nb");
+        b.cursors = vec![Cursor::new(3)]; // inside "b"
+        b.duplicate_line();
+        assert_eq!(b.rope.to_string(), "a\nb\nb");
+        // Two cursors on the same line duplicate it once.
+        let mut b = buf("x\ny\nz");
+        b.cursors = vec![Cursor::new(2), Cursor::new(3)]; // both on "y"
+        b.duplicate_line();
+        assert_eq!(b.rope.to_string(), "x\ny\ny\nz");
     }
 
     #[test]

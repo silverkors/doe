@@ -31,6 +31,7 @@ pub enum Command {
     DeleteWordLeft,
     DeleteWordRight,
     DeleteLine,
+    DuplicateLine,
     Undo,
     Redo,
     Tab,

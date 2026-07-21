@@ -36,6 +36,8 @@ pub fn catalog() -> &'static [PaletteAction] {
         PaletteAction { command: "redo", title: "Redo", hint: "Ctrl+Y" },
         PaletteAction { command: "delete_word_left", title: "Delete Previous Word", hint: "Alt/Ctrl+Backspace" },
         PaletteAction { command: "delete_word_right", title: "Delete Next Word", hint: "Alt/Ctrl+Delete" },
+        PaletteAction { command: "delete_line", title: "Delete Line", hint: "Ctrl+Shift+K" },
+        PaletteAction { command: "duplicate_line", title: "Duplicate Line", hint: "Ctrl+Shift+D" },
         PaletteAction { command: "toggle_comment", title: "Toggle Line Comment", hint: "Ctrl+/" },
         PaletteAction { command: "toggle_soft_wrap", title: "Toggle Soft Wrap", hint: "Alt+Z" },
         PaletteAction { command: "help", title: "Keyboard Shortcuts…", hint: "F1" },

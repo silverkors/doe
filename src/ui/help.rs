@@ -48,6 +48,7 @@ const SECTIONS: &[(&str, &[(&str, &str)])] = &[
         ("delete_word_left", "Delete previous word"),
         ("delete_word_right", "Delete next word"),
         ("delete_line", "Delete line"),
+        ("duplicate_line", "Duplicate line"),
         ("toggle_comment", "Toggle line comment"),
         ("toggle_bold", "Markdown: bold"),
         ("toggle_italic", "Markdown: italic"),

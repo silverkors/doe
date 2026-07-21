@@ -34,6 +34,7 @@ pub fn parse(input: &str) -> Option<Command> {
         "delete_word_left" | "delete_word" => Command::DeleteWordLeft,
         "delete_word_right" => Command::DeleteWordRight,
         "delete_line" => Command::DeleteLine,
+        "duplicate_line" | "duplicate" => Command::DuplicateLine,
 
         "toggle_bold" => Command::ToggleBold,
         "toggle_italic" => Command::ToggleItalic,

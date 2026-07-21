@@ -1405,6 +1405,10 @@ impl App {
                 self.active_buffer_mut().delete_line();
                 edited = true;
             }
+            Command::DuplicateLine => {
+                self.active_buffer_mut().duplicate_line();
+                edited = true;
+            }
             Command::Tab => {
                 let (sp, tw) = (self.config.settings.insert_spaces, self.config.settings.tab_width);
                 self.active_buffer_mut().insert_tab(sp, tw);
