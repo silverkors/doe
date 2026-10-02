@@ -64,7 +64,7 @@ fn fence_len(line: &str) -> usize {
 /// The text after the fence characters (the info string), trimmed.
 fn info_string(line: &str) -> &str {
     let t = line.trim_start();
-    t.trim_start_matches(|c| c == '`' || c == '~').trim()
+    t.trim_start_matches(['`', '~']).trim()
 }
 
 fn parse_info(info: &str) -> Directives {
@@ -142,7 +142,7 @@ pub fn parse_blocks(lines: &[&str]) -> Vec<ParsedBlock> {
         let fence_close_line = j;
 
         if directives.run {
-            let source = if i + 1 <= fence_close_line {
+            let source = if i < fence_close_line {
                 lines[i + 1..fence_close_line].join("\n")
             } else {
                 String::new()

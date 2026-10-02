@@ -148,7 +148,7 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
                 let marker = ltext.trim_start().strip_prefix('>').unwrap_or("");
                 let after = marker.strip_prefix(' ').unwrap_or(marker);
                 let content = if matches!(loaded_preview, Some(PreviewRole::Header(_))) {
-                    after.splitn(2, ']').nth(1).unwrap_or("").trim_start()
+                    after.split_once(']').map(|x| x.1).unwrap_or("").trim_start()
                 } else {
                     after
                 };

@@ -45,6 +45,22 @@ pub fn find_prev(text: &str, needle: &str, from: usize, case_sensitive: bool) ->
         .copied()
 }
 
+fn matches_at(hay: &[char], at: usize, pat: &[char], case_sensitive: bool) -> bool {
+    for (k, &pc) in pat.iter().enumerate() {
+        let hc = hay[at + k];
+        let eq = if case_sensitive {
+            hc == pc
+        } else {
+            hc.eq_ignore_ascii_case(&pc)
+                || hc.to_lowercase().eq(pc.to_lowercase())
+        };
+        if !eq {
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,20 +95,4 @@ mod tests {
         assert_eq!(find_prev(t, "a", 2, true), Some((0, 1)));
         assert_eq!(find_prev(t, "a", 0, true), Some((4, 5))); // wraps
     }
-}
-
-fn matches_at(hay: &[char], at: usize, pat: &[char], case_sensitive: bool) -> bool {
-    for (k, &pc) in pat.iter().enumerate() {
-        let hc = hay[at + k];
-        let eq = if case_sensitive {
-            hc == pc
-        } else {
-            hc.eq_ignore_ascii_case(&pc)
-                || hc.to_lowercase().eq(pc.to_lowercase())
-        };
-        if !eq {
-            return false;
-        }
-    }
-    true
 }

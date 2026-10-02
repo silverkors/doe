@@ -76,6 +76,18 @@ pub fn fallback_chord(ev: &KeyEvent) -> Option<String> {
     }
 }
 
+/// If this event is a plain printable character (no ctrl/alt), return it for
+/// direct insertion in insert mode.
+pub fn printable_char(ev: &KeyEvent) -> Option<char> {
+    if ev.modifiers.contains(KeyModifiers::CONTROL) || ev.modifiers.contains(KeyModifiers::ALT) {
+        return None;
+    }
+    match ev.code {
+        KeyCode::Char(c) => Some(c),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,17 +117,5 @@ mod tests {
         assert_eq!(fallback_chord(&ev).as_deref(), Some("ctrl-z"));
         let ev = KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT);
         assert_eq!(fallback_chord(&ev), None);
-    }
-}
-
-/// If this event is a plain printable character (no ctrl/alt), return it for
-/// direct insertion in insert mode.
-pub fn printable_char(ev: &KeyEvent) -> Option<char> {
-    if ev.modifiers.contains(KeyModifiers::CONTROL) || ev.modifiers.contains(KeyModifiers::ALT) {
-        return None;
-    }
-    match ev.code {
-        KeyCode::Char(c) => Some(c),
-        _ => None,
     }
 }

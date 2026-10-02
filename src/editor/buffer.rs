@@ -1087,8 +1087,8 @@ impl Buffer {
             // after a previous wrap, where only the inner text is selected).
             let outside = s >= mlen
                 && e + mlen <= len
-                && self.rope.slice(s - mlen..s).to_string() == marker
-                && self.rope.slice(e..e + mlen).to_string() == marker;
+                && self.rope.slice(s - mlen..s) == marker
+                && self.rope.slice(e..e + mlen) == marker;
             // Markers included within the selection itself.
             let inside =
                 sel_chars >= 2 * mlen && sel.starts_with(marker) && sel.ends_with(marker);

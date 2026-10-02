@@ -2093,7 +2093,7 @@ mod tests {
         }
         let app = App::new(cfg_in(&d), vec![]);
         assert!(
-            app.buffers.iter().any(|x| x.rope.to_string() == "UNSAVED a\n"),
+            app.buffers.iter().any(|x| x.rope == "UNSAVED a\n"),
             "unsaved a.md lost"
         );
         let _ = std::fs::remove_dir_all(&d);
