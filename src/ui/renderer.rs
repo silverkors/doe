@@ -304,10 +304,19 @@ pub fn render(screen: &mut Screen, app: &App, out: &mut impl Write) -> std::io::
             None => continue,
         };
         let dcol = buf.display_col(cl, off);
-        if dcol < vr.base_col || dcol - vr.base_col >= text_width {
+        if dcol < vr.base_col {
             continue;
         }
-        let x = layout.text_x() + (dcol - vr.base_col) as u16;
+        let mut rel = dcol - vr.base_col;
+        // Soft wrap: the end of a row that fills the width exactly has no cell
+        // of its own; show the cursor on the last column instead of hiding it.
+        if settings.soft_wrap && rel == text_width && text_width > 0 {
+            rel -= 1;
+        }
+        if rel >= text_width {
+            continue;
+        }
+        let x = layout.text_x() + rel as u16;
         let y = vr.y;
         if i == buf.primary {
             primary_screen_pos = Some((x, y));
@@ -867,6 +876,24 @@ mod tests {
         let mut b = Buffer::empty();
         b.set_text(s);
         b
+    }
+
+    #[test]
+    fn cursor_visible_at_end_of_exactly_full_wrapped_row() {
+        let mut cfg = crate::config::Config::load();
+        cfg.config_dir = std::env::temp_dir().join(format!("doe-test-render-{}", std::process::id()));
+        cfg.settings.soft_wrap = true;
+        cfg.settings.line_numbers = false;
+        cfg.settings.show_tab_ruler = false;
+        let mut app = App::new(cfg, vec![]);
+        app.active_buffer_mut().set_text("abcdefghij"); // exactly 10 wide
+        let end = app.active_buffer().len_chars();
+        app.active_buffer_mut().set_single_cursor(end, false);
+        app.resize(10, 5);
+        let mut screen = Screen::new();
+        render(&mut screen, &app, &mut Vec::new()).unwrap();
+        assert_eq!(screen.cursor, Some((9, 0)));
+        let _ = std::fs::remove_dir_all(&app.config.config_dir);
     }
 
     #[test]

@@ -160,9 +160,19 @@ fn inline(chars: &[char], from: usize, to: usize, out: &mut Vec<Span>, base: Sty
                 continue;
             }
         }
-        // Italic: *text* or _text_
-        if (c == '*' || c == '_') && i + 1 < to && chars[i + 1] != c {
-            if let Some(j) = find_char(chars, i + 1, to, c) {
+        // Italic: *text* or _text_. Per CommonMark, `_` is never emphasis
+        // inside a word (`my_var_name` stays literal).
+        let intraword_open = c == '_' && i > 0 && chars[i - 1].is_alphanumeric();
+        if (c == '*' || c == '_') && !intraword_open && i + 1 < to && chars[i + 1] != c {
+            let mut close = find_char(chars, i + 1, to, c);
+            while let Some(j) = close {
+                if c == '_' && j + 1 < chars.len() && chars[j + 1].is_alphanumeric() {
+                    close = find_char(chars, j + 1, to, c);
+                } else {
+                    break;
+                }
+            }
+            if let Some(j) = close {
                 out.push(Span::new(i, i + 1, StyleKind::MarkupPunct));
                 let mut s = Span::new(i + 1, j, StyleKind::Italic);
                 s.italic = true;
@@ -332,6 +342,15 @@ mod tests {
 
     fn hl(text: &str, state: &mut LineState) -> Vec<super::Span> {
         MarkdownHighlighter.highlight_line(0, text, state)
+    }
+
+    #[test]
+    fn underscores_inside_words_are_not_emphasis() {
+        let glyphs: String = super::rendered_inline("call my_var_name now").iter().map(|g| g.ch).collect();
+        assert_eq!(glyphs, "call my_var_name now");
+        let g = super::rendered_inline("an _italic_ word");
+        assert_eq!(g.iter().map(|g| g.ch).collect::<String>(), "an italic word");
+        assert!(g.iter().any(|g| g.italic));
     }
 
     #[test]
