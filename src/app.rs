@@ -2147,6 +2147,16 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_q_quits() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let (d, cfg) = sandbox("ctrlq");
+        let mut app = App::new(cfg, vec![]);
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+        assert!(app.should_quit, "status: {}", app.status_message);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn find_next_and_prev_step_through_adjacent_matches() {
         let (d, cfg) = sandbox("find");
         let mut app = App::new(cfg, vec![]);
