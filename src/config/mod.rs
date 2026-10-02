@@ -24,6 +24,11 @@ pub struct Config {
     pub config_dir: PathBuf,
     /// The user's own keybinding overrides (raw, for round-tripping on save).
     user_keybindings: HashMap<String, HashMap<String, String>>,
+    /// Problems found while loading `config.toml`, shown once at startup.
+    pub load_warning: Option<String>,
+    /// True when `config.toml` couldn't be parsed at all; `save` then refuses
+    /// to overwrite it with defaults.
+    unparseable: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -91,13 +96,51 @@ impl Keybindings {
     }
 }
 
-/// Just the keybindings table, parsed separately from settings so each parse
-/// ignores the other's keys (settings live at the top level, keybindings under
-/// `[keybindings.*]`).
-#[derive(Deserialize, Default)]
-struct KeybindingsFile {
-    #[serde(default)]
-    keybindings: HashMap<String, HashMap<String, String>>,
+/// Read settings and keybinding overrides key by key, so one bad value only
+/// drops that key instead of resetting the whole file to defaults. Returns the
+/// names of the keys that were ignored.
+fn parse_lenient(mut table: toml::Table) -> (Settings, HashMap<String, HashMap<String, String>>, Vec<String>) {
+    let mut bad = Vec::new();
+    let mut keybindings: HashMap<String, HashMap<String, String>> = HashMap::new();
+    match table.remove("keybindings") {
+        Some(toml::Value::Table(modes)) => {
+            for (mode, binds) in modes {
+                let toml::Value::Table(binds) = binds else {
+                    bad.push(format!("keybindings.{mode}"));
+                    continue;
+                };
+                let entry = keybindings.entry(mode.clone()).or_default();
+                for (chord, cmd) in binds {
+                    match cmd {
+                        toml::Value::String(cmd) => {
+                            entry.insert(chord, cmd);
+                        }
+                        _ => bad.push(format!("keybindings.{mode}.{chord}")),
+                    }
+                }
+            }
+        }
+        Some(_) => bad.push("keybindings".to_string()),
+        None => {}
+    }
+
+    // Settings: try the whole table first (the common case), then fall back
+    // to accepting keys one at a time.
+    if let Ok(s) = Settings::deserialize(toml::Value::Table(table.clone())) {
+        return (s, keybindings, bad);
+    }
+    let mut accepted = toml::Table::new();
+    for (key, value) in table {
+        let mut candidate = accepted.clone();
+        candidate.insert(key.clone(), value);
+        if Settings::deserialize(toml::Value::Table(candidate.clone())).is_ok() {
+            accepted = candidate;
+        } else {
+            bad.push(key);
+        }
+    }
+    let settings = Settings::deserialize(toml::Value::Table(accepted)).unwrap_or_default();
+    (settings, keybindings, bad)
 }
 
 impl Config {
@@ -111,15 +154,24 @@ impl Config {
         let mut keybindings = default_keybindings();
         let mut user_keybindings: HashMap<String, HashMap<String, String>> = HashMap::new();
 
+        let mut load_warning = None;
+        let mut unparseable = false;
         if let Ok(text) = std::fs::read_to_string(&config_path) {
-            // Top-level scalar keys → Settings (the [keybindings] table is an
-            // unknown field here and is ignored).
-            if let Ok(s) = toml::from_str::<Settings>(&text) {
-                settings = s;
-            }
-            if let Ok(kb) = toml::from_str::<KeybindingsFile>(&text) {
-                user_keybindings = kb.keybindings.clone();
-                keybindings.merge(kb.keybindings);
+            match text.parse::<toml::Table>() {
+                Ok(table) => {
+                    let (s, kb, bad) = parse_lenient(table);
+                    settings = s;
+                    user_keybindings = kb.clone();
+                    keybindings.merge(kb);
+                    if !bad.is_empty() {
+                        load_warning = Some(format!("config.toml: ignored invalid {}", bad.join(", ")));
+                    }
+                }
+                Err(e) => {
+                    unparseable = true;
+                    let msg = e.message().to_string();
+                    load_warning = Some(format!("config.toml has a syntax error ({msg}); using defaults, not saving"));
+                }
             }
         } else {
             // First run: scaffold config + default theme (best effort).
@@ -129,7 +181,7 @@ impl Config {
         let theme = Theme::load(&settings.theme, &config_dir.join("themes"));
         let callouts = Callouts::load(&config_dir);
 
-        Config { settings, keybindings, theme, callouts, config_dir, user_keybindings }
+        Config { settings, keybindings, theme, callouts, config_dir, user_keybindings, load_warning, unparseable }
     }
 
     /// Persist callout styles to `callouts.toml`.
@@ -160,6 +212,9 @@ impl Config {
 
     /// Persist settings (and the user's keybinding overrides) to `config.toml`.
     pub fn save(&self) {
+        if self.unparseable {
+            return; // don't clobber a file we couldn't read
+        }
         let _ = std::fs::create_dir_all(&self.config_dir);
         let mut out = String::from(
             "# DOE configuration — editable here or via the in-editor settings panel (Ctrl+,)\n\n",
@@ -346,3 +401,47 @@ tag = "#e06c75"
 attribute = "#ffcc66"
 markup_punct = "#606672"
 "##;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_bad_value_keeps_the_other_settings() {
+        let table: toml::Table = "tab_width = 8\nsoft_wrap = \"yes\"\n".parse().unwrap();
+        let (s, _, bad) = parse_lenient(table);
+        assert_eq!(s.tab_width, 8);
+        assert_eq!(s.soft_wrap, Settings::default().soft_wrap);
+        assert_eq!(bad, vec!["soft_wrap".to_string()]);
+    }
+
+    #[test]
+    fn bad_keybinding_value_keeps_the_rest() {
+        let table: toml::Table = "[keybindings.normal]\n\"ctrl-k\" = \"save\"\n\"ctrl-j\" = 3\n".parse().unwrap();
+        let (_, kb, bad) = parse_lenient(table);
+        assert_eq!(kb["normal"].get("ctrl-k").map(String::as_str), Some("save"));
+        assert_eq!(bad, vec!["keybindings.normal.ctrl-j".to_string()]);
+    }
+
+    #[test]
+    fn unparseable_config_is_not_overwritten() {
+        let dir = std::env::temp_dir().join(format!("doe-test-cfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "tab_width = = 4\n").unwrap();
+        let cfg = Config {
+            settings: Settings::default(),
+            keybindings: default_keybindings(),
+            theme: Theme::load("default-dark", &dir.join("themes")),
+            callouts: Callouts::load(&dir),
+            config_dir: dir.clone(),
+            user_keybindings: HashMap::new(),
+            load_warning: None,
+            unparseable: true,
+        };
+        cfg.save();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "tab_width = = 4\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

@@ -241,6 +241,9 @@ impl App {
         if recovered {
             app.set_status("restored unsaved changes");
         }
+        if let Some(w) = app.config.load_warning.take() {
+            app.set_status(w);
+        }
         app
     }
 
