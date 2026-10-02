@@ -1,8 +1,12 @@
 //! A sandboxed Lua evaluator (mlua, vendored Lua 5.4). The interpreter starts
 //! with the dangerous standard libraries removed (no `os`, `io`, `package`,
 //! `require`, `load*`, `debug`), `print` redirected into a capture buffer, a
-//! wall-clock timeout enforced via an instruction hook, and a cap on captured
-//! output. It has no filesystem, network, or process access.
+//! wall-clock timeout enforced via an instruction hook, a memory cap, and a
+//! cap on captured output. It has no filesystem, network, or process access.
+//!
+//! Each run happens on a worker thread with a hard deadline: the instruction
+//! hook can't interrupt a single long C call (e.g. a pathological
+//! `string.find` pattern), so the editor stops waiting rather than freezing.
 
 use super::{EvalRequest, EvalResult, Evaluator};
 use mlua::{HookTriggers, Lua, MultiValue, Value, VmState};
@@ -13,13 +17,18 @@ use std::time::{Duration, Instant};
 pub struct LuaEvaluator {
     timeout: Duration,
     output_cap: usize,
+    memory_limit: usize,
 }
 
 impl Default for LuaEvaluator {
     fn default() -> Self {
-        LuaEvaluator { timeout: Duration::from_millis(2000), output_cap: 64 * 1024 }
+        LuaEvaluator { timeout: Duration::from_millis(2000), output_cap: 64 * 1024, memory_limit: 256 * 1024 * 1024 }
     }
 }
+
+/// Extra time past `timeout` the editor waits for the worker before giving
+/// up on it (the in-VM hook normally reports the timeout first).
+const GRACE: Duration = Duration::from_millis(500);
 
 impl Evaluator for LuaEvaluator {
     fn handles(&self, lang: &str) -> bool {
@@ -27,17 +36,34 @@ impl Evaluator for LuaEvaluator {
     }
 
     fn eval(&mut self, req: &EvalRequest) -> EvalResult {
-        match run(req.source, self.timeout, self.output_cap) {
-            Ok(output) => EvalResult { output, error: None },
-            Err((output, error)) => EvalResult { output, error: Some(error) },
+        let (timeout, cap, mem) = (self.timeout, self.output_cap, self.memory_limit);
+        let source = req.source.to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("doe-lua".into())
+            .spawn(move || {
+                let _ = tx.send(run(&source, timeout, cap, mem));
+            });
+        if let Err(e) = spawned {
+            return EvalResult { output: String::new(), error: Some(format!("could not start Lua: {e}")) };
+        }
+        // On timeout the worker is abandoned: it finishes (or is torn down at
+        // exit) on its own, without blocking the UI.
+        match rx.recv_timeout(timeout + GRACE) {
+            Ok(Ok(output)) => EvalResult { output, error: None },
+            Ok(Err((output, error))) => EvalResult { output, error: Some(error) },
+            Err(_) => EvalResult { output: String::new(), error: Some("timed out".to_string()) },
         }
     }
 }
 
 /// Run `source`, returning the combined output, or `(partial_output, error)`.
-fn run(source: &str, timeout: Duration, cap: usize) -> Result<String, (String, String)> {
+fn run(source: &str, timeout: Duration, cap: usize, memory_limit: usize) -> Result<String, (String, String)> {
     let lua = Lua::new();
     let captured = Rc::new(RefCell::new(String::new()));
+    if let Err(e) = lua.set_memory_limit(memory_limit) {
+        return Err((String::new(), format!("sandbox setup failed: {e}")));
+    }
 
     if let Err(e) = sandbox(&lua, &captured, cap) {
         return Err((String::new(), format!("sandbox setup failed: {e}")));
@@ -173,14 +199,14 @@ mod tests {
 
     #[test]
     fn timeout_aborts_infinite_loop() {
-        let mut e = LuaEvaluator { timeout: Duration::from_millis(50), output_cap: 1024 };
+        let mut e = LuaEvaluator { timeout: Duration::from_millis(50), output_cap: 1024, ..LuaEvaluator::default() };
         let r = e.eval(&EvalRequest { lang: "lua", source: "while true do end", doc_path: None });
         assert!(r.error.as_deref().unwrap_or("").contains("timed out"));
     }
 
     #[test]
     fn output_is_capped() {
-        let mut e = LuaEvaluator { timeout: Duration::from_secs(2), output_cap: 64 };
+        let mut e = LuaEvaluator { timeout: Duration::from_secs(2), output_cap: 64, ..LuaEvaluator::default() };
         let r = e.eval(&EvalRequest {
             lang: "lua",
             source: "for i=1,1000 do print('xxxxxxxx') end",
@@ -188,5 +214,24 @@ mod tests {
         });
         assert!(r.output.len() < 200);
         assert!(r.output.contains("truncated"));
+    }
+
+    #[test]
+    fn long_c_call_cannot_freeze_the_editor() {
+        let mut ev = LuaEvaluator { timeout: Duration::from_millis(100), ..LuaEvaluator::default() };
+        let start = Instant::now();
+        let r = ev.eval(&EvalRequest {
+            lang: "lua",
+            source: "return string.find(string.rep('a', 3000), string.rep('a*', 6) .. 'b')",
+            doc_path: None,
+        });
+        assert!(start.elapsed() < Duration::from_secs(2), "eval blocked for {:?}", start.elapsed());
+        assert_eq!(r.error.as_deref(), Some("timed out"));
+    }
+
+    #[test]
+    fn memory_is_capped() {
+        let r = eval("local t = {} for i = 1, 64 do t[i] = string.rep('x', 2^24 + i) end return #t");
+        assert!(r.error.is_some(), "expected an out-of-memory error, got {:?}", r.output);
     }
 }
