@@ -101,7 +101,13 @@ impl App {
     pub fn new(config: Config, files: Vec<PathBuf>) -> Self {
         let recovery = Recovery::new(&config.config_dir);
         let session = recovery.read_session();
-        let mut next_recovery_id = 1u64;
+        // Start numbering past every id the saved session uses, so a buffer
+        // opened from the command line can't share an id with a restored one
+        // (they'd then overwrite or prune each other's backup).
+        let mut next_recovery_id = session
+            .as_ref()
+            .and_then(|s| s.buffers.iter().map(|e| e.id).max())
+            .map_or(1, |m| m + 1);
         let mut active = 0usize;
         let mut buffers: Vec<Buffer> = Vec::new();
         let mut recovered = false;
@@ -247,12 +253,17 @@ impl App {
     /// Mirror modified buffers into the recovery store (invisible autosave).
     pub fn autosave(&mut self) {
         self.recovery.ensure_dir();
-        let active = self.active;
+        // `active` indexes the session's entries (blank scratch buffers are
+        // left out), not `self.buffers`.
+        let mut active = 0;
         let mut entries: Vec<SessEntry> = Vec::new();
-        for buf in &mut self.buffers {
+        for (i, buf) in self.buffers.iter_mut().enumerate() {
             // Skip blank, never-saved scratch buffers.
             if buf.path.is_none() && buf.len_chars() == 0 {
                 continue;
+            }
+            if i == self.active {
+                active = entries.len();
             }
             let mut has_backup = false;
             if buf.modified && buf.len_chars() <= MAX_BACKUP_CHARS {
@@ -1970,7 +1981,9 @@ fn backup_for_path(recovery: &Recovery, session: &Option<Session>, path: &Path) 
         if !e.has_backup {
             continue;
         }
-        let p = e.path.as_ref()?;
+        let Some(p) = e.path.as_ref() else {
+            continue; // untitled backup — can't belong to `path`
+        };
         let same = match &target {
             Some(t) => std::path::Path::new(p).canonicalize().ok().as_ref() == Some(t),
             None => std::path::Path::new(p) == path,
@@ -2011,6 +2024,107 @@ fn markdown_headings(buf: &Buffer) -> Vec<crate::syntax::structure::Symbol> {
 mod tests {
     use super::*;
     use crate::config::Config;
+
+    /// A fresh, isolated directory holding a config dir and some files. Tests
+    /// pass the config dir via `Config::config_dir` (not the env var) so they
+    /// can run in parallel.
+    fn sandbox(name: &str) -> (PathBuf, Config) {
+        let d = std::env::temp_dir().join(format!("doe-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut cfg = Config::load();
+        cfg.config_dir = d.join("cfg");
+        (d, cfg)
+    }
+
+    fn cfg_in(d: &Path) -> Config {
+        let mut cfg = Config::load();
+        cfg.config_dir = d.join("cfg");
+        cfg
+    }
+
+    #[test]
+    fn arg_buffer_does_not_steal_restored_buffers_recovery_id() {
+        let (d, cfg) = sandbox("collide");
+        let a = d.join("a.md");
+        let b = d.join("b.md");
+        std::fs::write(&a, "disk a\n").unwrap();
+        std::fs::write(&b, "disk b\n").unwrap();
+        {
+            let mut app = App::new(cfg, vec![a.clone()]);
+            app.active_buffer_mut().set_text("UNSAVED a\n");
+            app.execute(Command::Quit);
+        }
+        {
+            let mut app = App::new(cfg_in(&d), vec![b.clone()]);
+            let mut ids: Vec<u64> = app.buffers.iter().map(|x| x.recovery_id).collect();
+            ids.dedup();
+            assert_eq!(ids.len(), app.buffers.len(), "duplicate recovery ids");
+            app.autosave();
+            app.execute(Command::Quit);
+        }
+        let app = App::new(cfg_in(&d), vec![]);
+        assert!(
+            app.buffers.iter().any(|x| x.rope.to_string() == "UNSAVED a\n"),
+            "unsaved a.md lost"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn untitled_backup_does_not_hide_a_files_backup() {
+        let (d, cfg) = sandbox("untitled");
+        let a = d.join("a.md");
+        std::fs::write(&a, "disk a\n").unwrap();
+        {
+            let mut app = App::new(cfg, vec![]);
+            app.active_buffer_mut().set_text("scratch\n"); // untitled, listed first
+            app.do_open(a.clone());
+            app.active_buffer_mut().set_text("UNSAVED a\n");
+            app.execute(Command::Quit);
+        }
+        let app = App::new(cfg_in(&d), vec![a.clone()]);
+        assert_eq!(app.buffers[0].rope.to_string(), "UNSAVED a\n");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn active_buffer_survives_blank_scratch_buffers() {
+        let (d, cfg) = sandbox("active");
+        let a = d.join("a.md");
+        let b = d.join("b.md");
+        std::fs::write(&a, "a\n").unwrap();
+        std::fs::write(&b, "b\n").unwrap();
+        {
+            let mut app = App::new(cfg, vec![]); // blank untitled buffer at index 0
+            app.do_open(a.clone());
+            app.do_open(b.clone());
+            app.active = 1; // a.md
+            app.execute(Command::Quit);
+        }
+        let app = App::new(cfg_in(&d), vec![]);
+        assert_eq!(app.active_buffer().rope.to_string(), "a\n");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn find_next_and_prev_step_through_adjacent_matches() {
+        let (d, cfg) = sandbox("find");
+        let mut app = App::new(cfg, vec![]);
+        app.active_buffer_mut().set_text("abab xx ab");
+        app.search.query = "ab".into();
+        app.active_buffer_mut().set_single_cursor(0, false);
+        let mut step = |app: &mut App, fwd: bool| {
+            app.execute(if fwd { Command::FindNext } else { Command::FindPrev });
+            app.active_buffer().primary_cursor().range()
+        };
+        assert_eq!(step(&mut app, true), (0, 2));
+        assert_eq!(step(&mut app, true), (2, 4));
+        assert_eq!(step(&mut app, true), (8, 10));
+        assert_eq!(step(&mut app, false), (2, 4));
+        assert_eq!(step(&mut app, false), (0, 2));
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     /// Build an App with a single Markdown buffer holding `text`, using an
     /// isolated temp config dir.
