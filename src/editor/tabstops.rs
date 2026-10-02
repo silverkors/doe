@@ -322,29 +322,45 @@ fn parse_stops(raw: &str) -> Vec<TabStop> {
 
 /// Split on commas that are not inside `{...}`.
 fn split_items(s: &str) -> Vec<String> {
+    split_top_level(s)
+}
+
+/// Split on commas outside `{...}` and outside quotes, so a leader of `","`
+/// or `"}"` doesn't break the item apart.
+fn split_top_level(s: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut depth = 0i32;
+    let mut quote: Option<char> = None;
     let mut cur = String::new();
     for c in s.chars() {
-        match c {
-            '{' => {
-                depth += 1;
-                cur.push(c);
-            }
-            '}' => {
-                depth -= 1;
-                cur.push(c);
-            }
-            ',' if depth == 0 => {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '{') => depth += 1,
+            (None, '}') => depth -= 1,
+            (None, ',') if depth == 0 => {
                 out.push(std::mem::take(&mut cur));
+                continue;
             }
-            _ => cur.push(c),
+            _ => {}
         }
+        cur.push(c);
     }
     if !cur.trim().is_empty() {
         out.push(cur);
     }
     out
+}
+
+/// Strip one pair of matching surrounding quotes, if present.
+fn unquote(v: &str) -> &str {
+    for q in ['"', '\''] {
+        if v.len() >= 2 && v.starts_with(q) && v.ends_with(q) {
+            return &v[1..v.len() - 1];
+        }
+    }
+    v
 }
 
 /// Parse one item: a bare integer column, or a `{col: N, align: X, leader: "c"}`
@@ -356,9 +372,9 @@ fn parse_stop_item(item: &str) -> Option<TabStop> {
     }
     let map = item.strip_prefix('{')?.strip_suffix('}')?;
     let (mut col, mut align, mut leader) = (None, TabAlign::Left, None);
-    for field in map.split(',') {
+    for field in split_top_level(map) {
         let (k, v) = field.split_once(':')?;
-        let (k, v) = (k.trim(), v.trim().trim_matches(['"', '\'']));
+        let (k, v) = (k.trim(), unquote(v.trim()));
         match k {
             "col" => col = v.parse::<usize>().ok(),
             "align" => {
@@ -474,6 +490,17 @@ pub fn splice_tabstops(text: &str, stops: &[TabStop]) -> (usize, usize, String) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leader_with_separator_chars_round_trips() {
+        for leader in [',', '}', '{', ':', '\''] {
+            let stop = TabStop { col: 20, align: TabAlign::Decimal, leader: Some(leader) };
+            let parsed = parse_stops(&format!("[8, {}]", serialize_stop(&stop)));
+            assert_eq!(parsed.len(), 2, "leader {leader:?}");
+            assert_eq!(parsed[1].leader, Some(leader), "leader {leader:?}");
+            assert_eq!(parsed[1].col, 20);
+        }
+    }
 
     fn spliced(text: &str, stops: &[TabStop]) -> String {
         let (s, e, rep) = splice_tabstops(text, stops);
