@@ -866,6 +866,7 @@ impl Buffer {
     // --- selection ---------------------------------------------------------
 
     pub fn select_all(&mut self) {
+        self.history.break_coalescing();
         self.cursors.truncate(1);
         self.primary = 0;
         self.cursors[0].anchor = 0;
@@ -874,6 +875,7 @@ impl Buffer {
     }
 
     pub fn select_line(&mut self) {
+        self.history.break_coalescing();
         let cursors = std::mem::take(&mut self.cursors);
         let mut out = Vec::with_capacity(cursors.len());
         for mut c in cursors {
@@ -891,6 +893,7 @@ impl Buffer {
     }
 
     pub fn collapse_selections(&mut self) {
+        self.history.break_coalescing();
         for c in &mut self.cursors {
             c.collapse();
         }
@@ -900,6 +903,7 @@ impl Buffer {
     // --- multi-cursor ------------------------------------------------------
 
     pub fn add_cursor_vertical(&mut self, delta: isize) {
+        self.history.break_coalescing();
         let last_line = self.rope.len_lines().saturating_sub(1);
         let base = self.cursors[self.primary.min(self.cursors.len() - 1)];
         let (line, col) = self.pos_to_line_col(base.head);
@@ -919,6 +923,7 @@ impl Buffer {
     /// selects the word under the cursor; each subsequent press adds a cursor
     /// selecting the next occurrence of that text.
     pub fn add_cursor_next_match(&mut self, case_sensitive: bool) {
+        self.history.break_coalescing();
         let needle = match self.primary_selection_text() {
             Some(s) if !s.is_empty() => s,
             _ => {
@@ -953,6 +958,7 @@ impl Buffer {
     }
 
     pub fn select_all_matches(&mut self, case_sensitive: bool) {
+        self.history.break_coalescing();
         let needle = match self.primary_selection_text() {
             Some(s) if !s.is_empty() => s,
             _ => {
@@ -1004,6 +1010,7 @@ impl Buffer {
     }
 
     pub fn clear_extra_cursors(&mut self) {
+        self.history.break_coalescing();
         let keep = self.cursors[self.primary.min(self.cursors.len() - 1)];
         self.cursors = vec![keep];
         self.primary = 0;
@@ -1033,6 +1040,7 @@ impl Buffer {
     }
 
     pub fn add_cursor_at(&mut self, pos: usize) {
+        self.history.break_coalescing();
         self.cursors.push(Cursor::new(pos));
         self.primary = self.cursors.len() - 1;
         self.normalize();
@@ -1044,6 +1052,7 @@ impl Buffer {
         if cursors.is_empty() {
             return;
         }
+        self.history.break_coalescing();
         self.cursors = cursors;
         if self.primary >= self.cursors.len() {
             self.primary = self.cursors.len() - 1;
@@ -1161,17 +1170,45 @@ impl Buffer {
                     .rope
                     .slice(insert_at..self.rope.line_to_char(l) + llen)
                     .to_string();
-                if line_text.starts_with(&with_prefix) {
-                    self.rope.remove(insert_at..insert_at + with_prefix.chars().count());
+                let n = if line_text.starts_with(&with_prefix) {
+                    with_prefix.chars().count()
                 } else if line_text.starts_with(prefix) {
-                    self.rope.remove(insert_at..insert_at + prefix.chars().count());
+                    prefix.chars().count()
+                } else {
+                    0
+                };
+                if n > 0 {
+                    self.rope.remove(insert_at..insert_at + n);
+                    self.map_cursors_through(insert_at, n, 0);
                 }
             } else {
-                self.rope.insert(insert_at, &format!("{prefix} "));
+                let with_prefix = format!("{prefix} ");
+                self.rope.insert(insert_at, &with_prefix);
+                self.map_cursors_through(insert_at, 0, with_prefix.chars().count());
             }
         }
         self.mark_modified();
-        self.clamp_cursors();
+        self.normalize();
+    }
+
+    /// Remap every cursor through one raw rope edit at `at` that removed
+    /// `removed` chars and inserted `inserted`. Positions inside the removed
+    /// span collapse to `at`; a caret exactly at a pure insertion moves past it.
+    fn map_cursors_through(&mut self, at: usize, removed: usize, inserted: usize) {
+        let map = |p: usize| -> usize {
+            if p < at {
+                p
+            } else if p >= at + removed {
+                p - removed + inserted
+            } else {
+                at
+            }
+        };
+        for c in &mut self.cursors {
+            c.head = map(c.head);
+            c.anchor = map(c.anchor);
+            c.goal_col = None;
+        }
     }
 
     // --- normalization -----------------------------------------------------
@@ -1184,22 +1221,65 @@ impl Buffer {
         }
     }
 
-    /// Clamp, then drop duplicate cursors (same head and anchor), preserving
-    /// order and tracking the primary index.
+    /// Clamp, then merge cursors whose ranges collide (duplicates, overlapping
+    /// or nested selections, carets inside a selection), preserving order and
+    /// tracking the primary index. `apply_edits` relies on the result being
+    /// non-overlapping. Ranges that merely touch stay separate.
     fn normalize(&mut self) {
         self.clamp_cursors();
-        let primary_val = self.cursors[self.primary.min(self.cursors.len() - 1)];
+        let primary_idx = self.primary.min(self.cursors.len() - 1);
         let mut out: Vec<Cursor> = Vec::with_capacity(self.cursors.len());
+        // Index into `out` that each input cursor ended up in.
+        let mut dest: Vec<usize> = Vec::with_capacity(self.cursors.len());
         for c in &self.cursors {
-            if !out.iter().any(|o| o.head == c.head && o.anchor == c.anchor) {
-                out.push(*c);
+            match out.iter().position(|o| Self::collides(o.range(), c.range())) {
+                Some(j) => {
+                    out[j] = Self::merge_cursors(out[j], *c);
+                    dest.push(j);
+                }
+                None => {
+                    out.push(*c);
+                    dest.push(out.len() - 1);
+                }
             }
         }
-        self.primary = out
-            .iter()
-            .position(|c| c.head == primary_val.head && c.anchor == primary_val.anchor)
-            .unwrap_or(out.len() - 1);
+        // A merge can grow a range into a cursor it previously missed; repeat
+        // until stable, remapping destinations as entries are absorbed.
+        let mut i = 0;
+        while i < out.len() {
+            match (i + 1..out.len()).find(|&j| Self::collides(out[i].range(), out[j].range())) {
+                Some(j) => {
+                    out[i] = Self::merge_cursors(out[i], out[j]);
+                    out.remove(j);
+                    for d in &mut dest {
+                        if *d == j {
+                            *d = i;
+                        } else if *d > j {
+                            *d -= 1;
+                        }
+                    }
+                }
+                None => i += 1,
+            }
+        }
+        self.primary = dest[primary_idx];
         self.cursors = out;
+    }
+
+    /// Two ranges must be merged when they overlap, share a start, or one is a
+    /// caret strictly inside the other. Touching ranges (`a.1 == b.0` with a
+    /// selection on the left) are left alone.
+    fn collides(a: (usize, usize), b: (usize, usize)) -> bool {
+        a == b || a.0 == b.0 || (a.0 < b.1 && b.0 < a.1)
+    }
+
+    /// Union of two cursors' ranges. Keeps `a`'s direction unless `a` is a bare
+    /// caret, in which case `b`'s direction wins.
+    fn merge_cursors(a: Cursor, b: Cursor) -> Cursor {
+        let (s, e) = super::selection::merge(a.range(), b.range());
+        let forward = if a.has_selection() { a.head >= a.anchor } else { b.head >= b.anchor };
+        let (anchor, head) = if forward { (s, e) } else { (e, s) };
+        Cursor { head, anchor, goal_col: if s == e { a.goal_col } else { None } }
     }
 
     // --- file I/O ----------------------------------------------------------
@@ -1265,6 +1345,7 @@ impl Buffer {
     }
 
     pub fn trim_trailing_whitespace(&mut self) {
+        let before = self.snapshot();
         let mut changed = false;
         for line in (0..self.rope.len_lines()).rev() {
             let start = self.rope.line_to_char(line);
@@ -1280,11 +1361,13 @@ impl Buffer {
             }
             if trimmed < len {
                 self.rope.remove(start + trimmed..start + len);
+                self.map_cursors_through(start + trimmed, len - trimmed, 0);
                 changed = true;
             }
         }
         if changed {
-            self.clamp_cursors();
+            self.history.record(before, false);
+            self.normalize();
             self.mark_modified();
         }
     }
@@ -1544,5 +1627,76 @@ mod tests {
         b.cursors = vec![Cursor::new(0)];
         b.trim_trailing_whitespace();
         assert_eq!(b.rope.to_string(), "a\nb\nc");
+    }
+
+    #[test]
+    fn overlapping_selections_merge_instead_of_panicking() {
+        let mut b = buf("abcdef");
+        b.cursors = vec![Cursor::new(0), Cursor::new(2)];
+        b.move_line_end(true); // {0..6} and {2..6}
+        assert_eq!(b.cursors.len(), 1);
+        b.insert_char('x');
+        assert_eq!(b.rope.to_string(), "x");
+    }
+
+    #[test]
+    fn caret_inside_selection_is_absorbed() {
+        let mut b = buf("abcdef");
+        let mut sel = Cursor::new(3);
+        sel.anchor = 0;
+        b.cursors = vec![sel];
+        b.add_cursor_at(0);
+        assert_eq!(b.cursors.len(), 1);
+        assert_eq!(b.primary, 0);
+        b.insert_char('x');
+        assert_eq!(b.rope.to_string(), "xdef");
+    }
+
+    #[test]
+    fn touching_cursors_stay_separate() {
+        let mut b = buf("abcdef");
+        let mut sel = Cursor::new(3);
+        sel.anchor = 0;
+        b.cursors = vec![sel];
+        b.add_cursor_at(3);
+        assert_eq!(b.cursors.len(), 2);
+        b.insert_char('x');
+        assert_eq!(b.rope.to_string(), "xxdef");
+    }
+
+    #[test]
+    fn selection_change_breaks_undo_coalescing() {
+        let mut b = buf("");
+        b.insert_char('a');
+        b.insert_char('b');
+        b.select_all();
+        b.insert_char('x');
+        assert_eq!(b.rope.to_string(), "x");
+        b.undo();
+        assert_eq!(b.rope.to_string(), "ab");
+    }
+
+    #[test]
+    fn trim_trailing_whitespace_keeps_cursor_on_its_char_and_is_undoable() {
+        let mut b = buf("a   \nbc");
+        b.cursors = vec![Cursor::new(6)]; // between 'b' and 'c'
+        b.trim_trailing_whitespace();
+        assert_eq!(b.rope.to_string(), "a\nbc");
+        assert_eq!(b.cursors[0].head, 3);
+        b.undo();
+        assert_eq!(b.rope.to_string(), "a   \nbc");
+    }
+
+    #[test]
+    fn toggle_comment_keeps_cursor_on_its_char() {
+        let mut b = buf("x\nlet y;");
+        b.language = Language::Rust;
+        b.cursors = vec![Cursor::new(7)]; // before ';'
+        b.toggle_line_comment();
+        assert_eq!(b.rope.to_string(), "x\n// let y;");
+        assert_eq!(b.rope.char(b.cursors[0].head), ';');
+        b.toggle_line_comment();
+        assert_eq!(b.rope.to_string(), "x\nlet y;");
+        assert_eq!(b.rope.char(b.cursors[0].head), ';');
     }
 }

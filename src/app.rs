@@ -1902,12 +1902,15 @@ impl App {
             return;
         }
         let text = self.active_buffer().rope.to_string();
-        let head = self.active_buffer().primary_cursor().head;
+        let (sel_start, sel_end) = self.active_buffer().primary_cursor().range();
         let cs = self.search.case_sensitive;
+        // Search from the far side of the current selection (usually the
+        // previous match) so adjacent matches aren't skipped and the current
+        // one isn't re-selected. A bare caret finds a match starting at it.
         let hit = if forward {
-            find::find_next(&text, &self.search.query, head + 1, cs)
+            find::find_next(&text, &self.search.query, sel_end, cs)
         } else {
-            find::find_prev(&text, &self.search.query, head, cs)
+            find::find_prev(&text, &self.search.query, sel_start, cs)
         };
         self.search.recompute(&text);
         if let Some((s, e)) = hit {
@@ -1932,7 +1935,14 @@ impl App {
             return;
         }
         let count = if all { matches.len() } else { 1 };
-        let to_apply: Vec<(usize, usize)> = if all { matches } else { vec![matches[0]] };
+        let to_apply: Vec<(usize, usize)> = if all {
+            matches
+        } else {
+            // Single replace: the first match at/after the cursor, wrapping.
+            let from = self.active_buffer().primary_cursor().range().0;
+            let m = matches.iter().find(|(s, _)| *s >= from).unwrap_or(&matches[0]);
+            vec![*m]
+        };
         self.active_buffer_mut().replace_ranges(&to_apply, to);
         self.search.matches.clear();
         self.notify(Event::BufferChange);
