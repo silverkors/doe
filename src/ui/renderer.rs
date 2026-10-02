@@ -791,7 +791,7 @@ fn draw_callout_card_row(
     let card_bg = tint(theme.background, accent, 0.14);
     let x0 = layout.text_x();
     let right = app.width.saturating_sub(1);
-    let w = (app.width - x0) as usize;
+    let w = app.width.saturating_sub(x0) as usize;
 
     for x in x0..app.width {
         screen.set(x, y, Cell { ch: ' ', fg: theme.foreground, bg: card_bg, bold: false, italic: false });
