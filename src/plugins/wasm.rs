@@ -27,8 +27,20 @@
 use super::api::{Event, Plugin, PluginView};
 use ropey::Rope;
 use serde::Serialize;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use wasmi::{Caller, Engine, Instance, Linker, Memory, Module, Store, TypedFunc};
+
+/// Instruction budget ("fuel") for one plugin hook call (status, event,
+/// commands). Hooks run on the UI thread — `doe_status` every frame — so a
+/// guest stuck in a loop must trap quickly instead of freezing the editor.
+const HOOK_FUEL: u64 = 20_000_000;
+/// Budget for one document evaluation (on the order of a second in a release
+/// build; kept small under test so the limit tests stay fast).
+const EVAL_FUEL: u64 = if cfg!(test) { 5_000_000 } else { 500_000_000 };
+
+fn refuel(store: &mut Store<HostState>, fuel: u64) {
+    let _ = store.set_fuel(fuel);
+}
 
 /// Host-side state available to host functions: captured logs, a status message
 /// the plugin asked to show, and the current document (for `doe_read`).
@@ -71,6 +83,9 @@ pub struct WasmPlugin {
     f_status: Option<FuncStrI64>,
     f_on_event: Option<FuncStrUnit>,
     f_commands: Option<Func0I64>,
+    /// Set once a hook traps (e.g. runs out of fuel); the plugin is then
+    /// skipped so a broken guest doesn't burn its budget every frame.
+    disabled: Cell<bool>,
     /// Kept alive for the lifetime of the plugin (exports borrow from it).
     _instance: Instance,
 }
@@ -87,6 +102,7 @@ impl WasmPlugin {
         let f_commands = instance.get_typed_func::<(), i64>(&store, "doe_commands").ok();
 
         // Resolve the name up front (fall back to the file stem).
+        refuel(&mut store, HOOK_FUEL);
         let name = f_name
             .and_then(|f| f.call(&mut store, ()).ok())
             .map(|packed| read_packed(&memory, &mut store, &dealloc, packed))
@@ -102,6 +118,7 @@ impl WasmPlugin {
             f_status,
             f_on_event,
             f_commands,
+            disabled: Cell::new(false),
             _instance: instance,
         })
     }
@@ -123,9 +140,12 @@ fn write_str(store: &mut Store<HostState>, memory: &Memory, alloc: &TypedFunc<i3
 /// Instantiate a module and resolve the shared ABI exports (memory, alloc,
 /// dealloc), wiring up the host imports (doe_log, doe_set_status, doe_read).
 fn instantiate(wasm: &[u8]) -> Result<(Store<HostState>, Instance, Memory, TypedFunc<i32, i32>, FuncStrUnit), String> {
-    let engine = Engine::default();
+    let mut config = wasmi::Config::default();
+    config.consume_fuel(true);
+    let engine = Engine::new(&config);
     let module = Module::new(&engine, wasm).map_err(|e| format!("parse: {e}"))?;
     let mut store = Store::new(&engine, HostState::default());
+    refuel(&mut store, HOOK_FUEL); // covers the start function
     let mut linker = Linker::<HostState>::new(&engine);
     // env.doe_log(ptr, len) — capture a debug line.
     linker
@@ -202,6 +222,7 @@ impl WasmEvaluator {
     /// Load a module as an evaluator, or `None` if it isn't one (no `doe_eval`).
     pub fn load(wasm: &[u8]) -> Option<WasmEvaluator> {
         let (mut store, instance, memory, alloc, dealloc) = instantiate(wasm).ok()?;
+        refuel(&mut store, HOOK_FUEL);
         let f_eval = instance.get_typed_func::<(i32, i32, i32, i32), i64>(&store, "doe_eval").ok()?;
         let languages = instance
             .get_typed_func::<(), i64>(&store, "doe_eval_languages")
@@ -220,17 +241,25 @@ impl crate::eval::Evaluator for WasmEvaluator {
     }
 
     fn eval(&mut self, req: &crate::eval::EvalRequest) -> crate::eval::EvalResult {
+        refuel(&mut self.store, EVAL_FUEL);
         let out = (|| {
-            let (lp, ll) = write_str(&mut self.store, &self.memory, &self.alloc, req.lang)?;
-            let (sp, sl) = write_str(&mut self.store, &self.memory, &self.alloc, req.source)?;
-            let packed = self.f_eval.call(&mut self.store, (lp, ll, sp, sl)).ok();
+            let (lp, ll) = write_str(&mut self.store, &self.memory, &self.alloc, req.lang).ok_or("wasm eval failed")?;
+            let (sp, sl) = write_str(&mut self.store, &self.memory, &self.alloc, req.source).ok_or("wasm eval failed")?;
+            let packed = self.f_eval.call(&mut self.store, (lp, ll, sp, sl));
             let _ = self.dealloc.call(&mut self.store, (lp, ll));
             let _ = self.dealloc.call(&mut self.store, (sp, sl));
-            Some(read_packed(&self.memory, &mut self.store, &self.dealloc, packed?))
+            let packed = packed.map_err(|e| {
+                if e.as_trap_code() == Some(wasmi::TrapCode::OutOfFuel) {
+                    "wasm eval: execution limit exceeded".to_string()
+                } else {
+                    format!("wasm eval failed: {e}")
+                }
+            })?;
+            Ok::<_, String>(read_packed(&self.memory, &mut self.store, &self.dealloc, packed))
         })();
         match out {
-            Some(output) => crate::eval::EvalResult { output, error: None },
-            None => crate::eval::EvalResult { output: String::new(), error: Some("wasm eval failed".into()) },
+            Ok(output) => crate::eval::EvalResult { output, error: None },
+            Err(e) => crate::eval::EvalResult { output: String::new(), error: Some(e) },
         }
     }
 }
@@ -243,11 +272,13 @@ fn read_packed(memory: &Memory, store: &mut Store<HostState>, dealloc: &FuncStrU
     if len == 0 {
         return String::new();
     }
-    let mut buf = vec![0u8; len];
-    let out = match memory.read(&*store, ptr, &mut buf) {
-        Ok(()) => String::from_utf8_lossy(&buf).into_owned(),
-        Err(_) => String::new(),
-    };
+    // Slice guest memory directly: a bogus guest length must not make the
+    // host allocate gigabytes before the bounds check.
+    let out = ptr
+        .checked_add(len)
+        .and_then(|end| memory.data(&*store).get(ptr..end))
+        .map(|b| String::from_utf8_lossy(b).into_owned())
+        .unwrap_or_default();
     let _ = dealloc.call(&mut *store, (ptr as i32, len as i32));
     out
 }
@@ -255,9 +286,9 @@ fn read_packed(memory: &Memory, store: &mut Store<HostState>, dealloc: &FuncStrU
 /// Read a string argument out of a host-function caller's memory.
 fn read_caller_str(caller: &mut Caller<'_, HostState>, ptr: i32, len: i32) -> Option<String> {
     let memory = caller.get_export("memory")?.into_memory()?;
-    let mut buf = vec![0u8; len.max(0) as usize];
-    memory.read(&*caller, ptr as usize, &mut buf).ok()?;
-    Some(String::from_utf8_lossy(&buf).into_owned())
+    let (ptr, len) = (ptr as u32 as usize, len.max(0) as usize);
+    let bytes = memory.data(&*caller).get(ptr..ptr.checked_add(len)?)?;
+    Some(String::from_utf8_lossy(bytes).into_owned())
 }
 
 impl Plugin for WasmPlugin {
@@ -267,16 +298,25 @@ impl Plugin for WasmPlugin {
 
     fn on_event(&mut self, event: &Event) {
         let Some(func) = self.f_on_event else { return };
+        if self.disabled.get() {
+            return;
+        }
         let json = serde_json::to_string(&event_json(event)).unwrap_or_default();
         let mut store = self.store.borrow_mut();
+        refuel(&mut store, HOOK_FUEL);
         if let Some((ptr, len)) = self.write_str(&mut store, &json) {
-            let _ = func.call(&mut *store, (ptr, len));
+            if func.call(&mut *store, (ptr, len)).is_err() {
+                self.disabled.set(true);
+            }
             let _ = self.dealloc.call(&mut *store, (ptr, len));
         }
     }
 
     fn status_segment(&self, view: &PluginView) -> Option<String> {
         let func = self.f_status?;
+        if self.disabled.get() {
+            return None;
+        }
         let vj = ViewJson {
             line: view.cursor_line,
             col: view.cursor_col,
@@ -286,8 +326,12 @@ impl Plugin for WasmPlugin {
         };
         let json = serde_json::to_string(&vj).ok()?;
         let mut store = self.store.borrow_mut();
+        refuel(&mut store, HOOK_FUEL);
         let (ptr, len) = self.write_str(&mut store, &json)?;
         let packed = func.call(&mut *store, (ptr, len)).ok();
+        if packed.is_none() {
+            self.disabled.set(true);
+        }
         let _ = self.dealloc.call(&mut *store, (ptr, len));
         let out = read_packed(&self.memory, &mut store, &self.dealloc, packed?);
         if out.is_empty() {
@@ -299,7 +343,11 @@ impl Plugin for WasmPlugin {
 
     fn commands(&self) -> Vec<(String, String)> {
         let Some(func) = self.f_commands else { return Vec::new() };
+        if self.disabled.get() {
+            return Vec::new();
+        }
         let mut store = self.store.borrow_mut();
+        refuel(&mut store, HOOK_FUEL);
         let Ok(packed) = func.call(&mut *store, ()) else { return Vec::new() };
         let json = read_packed(&self.memory, &mut store, &self.dealloc, packed);
         serde_json::from_str::<Vec<(String, String)>>(&json).unwrap_or_default()
@@ -455,5 +503,54 @@ mod tests {
         assert_eq!(p.take_status().as_deref(), Some("hello world"));
         // Status is taken once.
         assert_eq!(p.take_status(), None);
+    }
+
+    const LOOP_WAT: &str = r#"
+        (module
+          (memory (export "memory") 1)
+          (global $heap (mut i32) (i32.const 1024))
+          (data (i32.const 16) "[\22py\22]")
+          (func (export "alloc") (param i32) (result i32)
+            (local $p i32)
+            (local.set $p (global.get $heap))
+            (global.set $heap (i32.add (global.get $heap) (local.get 0)))
+            (local.get $p))
+          (func (export "dealloc") (param i32 i32))
+          (func (export "doe_status") (param i32 i32) (result i64)
+            (loop (br 0)) (i64.const 0))
+          (func (export "doe_eval_languages") (result i64)
+            (i64.or (i64.shl (i64.const 16) (i64.const 32)) (i64.const 6)))
+          (func (export "doe_eval") (param i32 i32 i32 i32) (result i64)
+            (loop (br 0)) (i64.const 0))
+          (func (export "doe_commands") (result i64)
+            ;; bogus length far past the end of memory
+            (i64.or (i64.shl (i64.const 16) (i64.const 32)) (i64.const 0xfffffff0))))
+    "#;
+
+    #[test]
+    fn looping_hook_traps_and_disables_the_plugin() {
+        use ropey::Rope;
+        let wasm = wat::parse_str(LOOP_WAT).unwrap();
+        let p = WasmPlugin::load("loop.wasm", &wasm).expect("loads");
+        let rope = Rope::from_str("");
+        let view = PluginView { rope: &rope, cursor_line: 0, cursor_col: 0, selection: None, language: "", path: None };
+        assert_eq!(p.status_segment(&view), None);
+        assert!(p.disabled.get());
+    }
+
+    #[test]
+    fn looping_evaluator_reports_limit() {
+        use crate::eval::Evaluator;
+        let wasm = wat::parse_str(LOOP_WAT).unwrap();
+        let mut ev = WasmEvaluator::load(&wasm).expect("is an evaluator");
+        let r = ev.eval(&crate::eval::EvalRequest { lang: "py", source: "", doc_path: None });
+        assert_eq!(r.error.as_deref(), Some("wasm eval: execution limit exceeded"));
+    }
+
+    #[test]
+    fn out_of_bounds_guest_string_is_empty() {
+        let wasm = wat::parse_str(LOOP_WAT).unwrap();
+        let p = WasmPlugin::load("loop.wasm", &wasm).expect("loads");
+        assert!(p.commands().is_empty());
     }
 }
