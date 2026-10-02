@@ -1048,6 +1048,16 @@ impl App {
         if !self.config.settings.mouse {
             return;
         }
+        // Panels and the modal are keyboard-driven; don't let clicks or
+        // scrolling on them move the cursor in the buffer underneath.
+        if self.modal_open
+            || self.help_panel.open
+            || self.settings_panel.open
+            || self.callout_panel.open
+            || self.symbol_panel.open
+        {
+            return;
+        }
         // Clicks on the ruler row manage tab stops instead of moving the
         // cursor; other events (scroll wheel) fall through to normal handling.
         if self.config.settings.show_tab_ruler && ev.row == 0 {
