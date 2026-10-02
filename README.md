@@ -73,7 +73,8 @@ doe a.md b.rs c.toml   # open several files as buffers
   buffers, which you can then Save As). Survives crashes too. The status bar
   shows `*` while a buffer has unsaved changes; "Discard Changes and Quit"
   throws them away. Closing a single modified buffer (`Ctrl+W`) prompts to
-  **Save / Discard / Cancel**.
+  **Save / Discard / Cancel**. "Close All Files and Quit" (`:qa`) does that
+  for every unsaved buffer, then exits so the next launch starts empty.
 - **Multiple buffers**, status bar, line numbers (absolute or relative).
 - **Configurable** keybindings, settings and themes — no recompile needed.
 - **Incremental rendering** — a diffing cell grid redraws only changed cells.

@@ -22,6 +22,9 @@ pub enum Command {
     Quit,
     ForceQuit,
     SaveAndQuit,
+    /// Close every buffer (asking Save / Discard / Cancel for each unsaved
+    /// one), then quit with nothing left to restore on the next launch.
+    CloseAllAndQuit,
 
     // Editing
     InsertChar(char),

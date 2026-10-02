@@ -22,6 +22,7 @@ pub fn parse(input: &str) -> Option<Command> {
         "open" | "e" | "edit" => Command::OpenFile(PathBuf::from(rest)),
         "quit" | "q" => Command::Quit,
         "force_quit" | "q!" => Command::ForceQuit,
+        "close_all_quit" | "qa" => Command::CloseAllAndQuit,
         "save_quit" | "wq" => Command::SaveAndQuit,
 
         "undo" => Command::Undo,

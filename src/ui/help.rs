@@ -39,6 +39,7 @@ const SECTIONS: &[(&str, &[(&str, &str)])] = &[
         ("next_buffer", "Next buffer"),
         ("prev_buffer", "Previous buffer"),
         ("quit", "Quit"),
+        ("close_all_quit", "Close all files and quit"),
     ]),
     ("Editing", &[
         ("undo", "Undo"),

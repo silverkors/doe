@@ -91,6 +91,8 @@ pub struct App {
     /// Centre the viewport on the cursor at the first real resize — set when a
     /// remembered position was restored (terminal size is unknown in `new`).
     pending_center: bool,
+    /// Set while Close All and Quit walks the unsaved buffers.
+    closing_all: bool,
 }
 
 /// Buffers larger than this are not backed up (autosaving a huge file on every
@@ -224,6 +226,7 @@ impl App {
             positions,
             help_panel: crate::ui::help::HelpPanel::default(),
             pending_center: restored_any,
+            closing_all: false,
         };
         app.sync_tab_width();
 
@@ -1258,6 +1261,10 @@ impl App {
             Command::Quit => self.shutdown(false),
             // Explicitly discard unsaved changes (clears the recovery store).
             Command::ForceQuit => self.shutdown(true),
+            Command::CloseAllAndQuit => {
+                self.closing_all = true;
+                self.close_all_step();
+            }
             Command::SaveAndQuit => {
                 if self.active_buffer().path.is_some() {
                     self.do_save();
@@ -1612,15 +1619,28 @@ impl App {
                 // opens a Save As prompt instead, leaving it modified).
                 if !self.active_buffer().modified {
                     self.do_close_buffer();
+                    if self.closing_all {
+                        self.close_all_step();
+                    }
+                } else if self.closing_all {
+                    // Save As is now open; finish that, then run the command again.
+                    self.closing_all = false;
                 }
             }
             (Some(PromptKind::ConfirmClose), Char('d' | 'D')) => {
                 self.command.close();
                 self.do_close_buffer();
+                if self.closing_all {
+                    self.close_all_step();
+                }
             }
             (Some(PromptKind::ConfirmClose), Char('c' | 'C') | Esc) => {
                 self.command.close();
-                self.set_status("close cancelled");
+                if std::mem::take(&mut self.closing_all) {
+                    self.set_status("quit cancelled");
+                } else {
+                    self.set_status("close cancelled");
+                }
             }
             (Some(PromptKind::ConfirmTrust), Char('o' | 'O')) => {
                 self.command.close();
@@ -1898,6 +1918,32 @@ impl App {
         });
     }
 
+    /// One step of Close All and Quit: prompt for the next buffer with unsaved
+    /// changes, or — once none are left — quit. Every unsaved buffer has been
+    /// explicitly saved or discarded by then, so the recovery session is
+    /// cleared and the next launch starts empty.
+    fn close_all_step(&mut self) {
+        let pending = self
+            .buffers
+            .iter()
+            .position(|b| b.modified && !(b.path.is_none() && b.len_chars() == 0));
+        match pending {
+            Some(i) => {
+                self.active = i;
+                self.top_line = 0;
+                self.top_subrow = 0;
+                self.left_col = 0;
+                self.ensure_cursor_visible();
+                let name = self.active_buffer().name();
+                self.open_prompt(PromptKind::ConfirmClose, &format!("  ({name})"));
+            }
+            None => {
+                self.closing_all = false;
+                self.shutdown(true);
+            }
+        }
+    }
+
     fn close_buffer(&mut self) {
         if self.active_buffer().modified {
             // Ask whether to save, discard, or cancel rather than refusing.
@@ -2143,6 +2189,66 @@ mod tests {
         let mut app = App::new(cfg, vec![d.join(".").join("a.md")]);
         app.do_open(a.clone());
         assert_eq!(app.buffers.len(), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn key(app: &mut App, c: char) {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn close_all_and_quit_saves_discards_and_starts_fresh() {
+        let (d, cfg) = sandbox("closeall");
+        let a = d.join("a.md");
+        let b = d.join("b.md");
+        std::fs::write(&a, "a\n").unwrap();
+        std::fs::write(&b, "b\n").unwrap();
+        let mut app = App::new(cfg, vec![a.clone(), b.clone()]);
+        app.buffers[0].set_text("A edited\n");
+        app.buffers[1].set_text("B edited\n");
+        app.execute(Command::CloseAllAndQuit);
+        assert_eq!(app.command.kind, Some(PromptKind::ConfirmClose));
+        assert!(!app.should_quit);
+        key(&mut app, 's'); // save a.md
+        assert_eq!(app.command.kind, Some(PromptKind::ConfirmClose));
+        key(&mut app, 'd'); // discard b.md
+        assert!(app.should_quit);
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "A edited\n");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "b\n");
+        // Nothing is restored next time.
+        let app = App::new(cfg_in(&d), vec![]);
+        assert_eq!(app.buffers.len(), 1);
+        assert!(app.buffers[0].path.is_none() && app.buffers[0].len_chars() == 0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn close_all_and_quit_can_be_cancelled() {
+        let (d, cfg) = sandbox("closeall-cancel");
+        let a = d.join("a.md");
+        std::fs::write(&a, "a\n").unwrap();
+        let mut app = App::new(cfg, vec![a.clone()]);
+        app.buffers[0].set_text("A edited\n");
+        app.execute(Command::CloseAllAndQuit);
+        key(&mut app, 'c');
+        assert!(!app.should_quit);
+        assert_eq!(app.buffers[0].rope.to_string(), "A edited\n");
+        // A later plain Close Buffer still behaves normally.
+        app.execute(Command::CloseBuffer);
+        key(&mut app, 'c');
+        assert!(!app.should_quit);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn close_all_and_quit_without_changes_quits_at_once() {
+        let (d, cfg) = sandbox("closeall-clean");
+        let a = d.join("a.md");
+        std::fs::write(&a, "a\n").unwrap();
+        let mut app = App::new(cfg, vec![a.clone()]);
+        app.execute(Command::CloseAllAndQuit);
+        assert!(app.should_quit);
         let _ = std::fs::remove_dir_all(&d);
     }
 
