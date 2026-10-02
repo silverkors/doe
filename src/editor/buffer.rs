@@ -590,7 +590,7 @@ impl Buffer {
                     let (s, e) = c.range();
                     Edit { start: s, end: e, text: String::new() }
                 } else if !any_sel && c.head > 0 {
-                    Edit { start: c.head - 1, end: c.head, text: String::new() }
+                    Edit { start: prev_boundary(&self.rope, c.head), end: c.head, text: String::new() }
                 } else {
                     Edit { start: c.head, end: c.head, text: String::new() }
                 }
@@ -611,7 +611,7 @@ impl Buffer {
                     let (s, e) = c.range();
                     Edit { start: s, end: e, text: String::new() }
                 } else if !any_sel && c.head < len {
-                    Edit { start: c.head, end: c.head + 1, text: String::new() }
+                    Edit { start: c.head, end: next_boundary(&self.rope, c.head), text: String::new() }
                 } else {
                     Edit { start: c.head, end: c.head, text: String::new() }
                 }
@@ -714,12 +714,13 @@ impl Buffer {
 
     pub fn move_left(&mut self, extend: bool) {
         self.history.break_coalescing();
+        let rope = &self.rope;
         for c in &mut self.cursors {
             if !extend && c.has_selection() {
                 let (s, _) = c.range();
                 Self::set_head(c, s, false);
             } else {
-                Self::set_head(c, c.head.saturating_sub(1), extend);
+                Self::set_head(c, prev_boundary(rope, c.head), extend);
             }
         }
         self.normalize();
@@ -727,13 +728,13 @@ impl Buffer {
 
     pub fn move_right(&mut self, extend: bool) {
         self.history.break_coalescing();
-        let len = self.rope.len_chars();
+        let rope = &self.rope;
         for c in &mut self.cursors {
             if !extend && c.has_selection() {
                 let (_, e) = c.range();
                 Self::set_head(c, e, false);
             } else {
-                Self::set_head(c, (c.head + 1).min(len), extend);
+                Self::set_head(c, next_boundary(rope, c.head), extend);
             }
         }
         self.normalize();
@@ -1385,10 +1386,48 @@ impl Buffer {
     }
 }
 
+/// The cursor stop before `p`: one char back, or two when that would land
+/// between the `\r` and `\n` of a CRLF line ending.
+fn prev_boundary(rope: &Rope, p: usize) -> usize {
+    if p >= 2 && rope.char(p - 1) == '\n' && rope.char(p - 2) == '\r' {
+        p - 2
+    } else {
+        p.saturating_sub(1)
+    }
+}
+
+/// The cursor stop after `p` (clamped to the end), stepping over a CRLF pair
+/// as one unit.
+fn next_boundary(rope: &Rope, p: usize) -> usize {
+    let len = rope.len_chars();
+    if p + 1 < len && rope.char(p) == '\r' && rope.char(p + 1) == '\n' {
+        p + 2
+    } else {
+        (p + 1).min(len)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::editor::cursor::Cursor;
+
+    #[test]
+    fn crlf_is_one_unit_for_movement_and_deletion() {
+        let mut b = buf("ab\r\ncd");
+        b.cursors = vec![Cursor::new(2)];
+        b.move_right(false);
+        assert_eq!(b.cursors[0].head, 4);
+        b.move_left(false);
+        assert_eq!(b.cursors[0].head, 2);
+        b.delete();
+        assert_eq!(b.rope.to_string(), "abcd");
+        let mut b = buf("ab\r\ncd");
+        b.cursors = vec![Cursor::new(4)];
+        b.backspace();
+        assert_eq!(b.rope.to_string(), "abcd");
+        assert_eq!(b.cursors[0].head, 2);
+    }
 
     fn buf(text: &str) -> Buffer {
         let mut b = Buffer::empty();
