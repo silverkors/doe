@@ -2139,7 +2139,7 @@ mod tests {
         app.active_buffer_mut().set_text("abab xx ab");
         app.search.query = "ab".into();
         app.active_buffer_mut().set_single_cursor(0, false);
-        let mut step = |app: &mut App, fwd: bool| {
+        let step = |app: &mut App, fwd: bool| {
             app.execute(if fwd { Command::FindNext } else { Command::FindPrev });
             app.active_buffer().primary_cursor().range()
         };

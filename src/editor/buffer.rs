@@ -34,6 +34,9 @@ pub struct Buffer {
     pub backup_rev: u64,
     /// Stable id used for this buffer's recovery backup filename.
     pub recovery_id: u64,
+    /// Process-unique identity, so caches keyed on `revision` (which starts
+    /// at 0 in every buffer) can tell buffers apart.
+    pub uid: u64,
     history: History,
     disk_mtime: Option<SystemTime>,
     /// Uniform fallback width (synced from `Settings::tab_width`) used to resolve
@@ -56,6 +59,7 @@ impl Buffer {
             revision: 0,
             backup_rev: 0,
             recovery_id: 0,
+            uid: next_uid(),
             history: History::new(),
             disk_mtime: None,
             tab_width: 4,
@@ -82,6 +86,7 @@ impl Buffer {
             revision: 0,
             backup_rev: 0,
             recovery_id: 0,
+            uid: next_uid(),
             history: History::new(),
             disk_mtime: mtime,
             tab_width: 4,
@@ -1384,6 +1389,12 @@ impl Buffer {
         }
         false
     }
+}
+
+fn next_uid() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// The cursor stop before `p`: one char back, or two when that would land

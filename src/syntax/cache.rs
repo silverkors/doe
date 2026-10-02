@@ -17,6 +17,7 @@ use tree_sitter::{Parser, Tree};
 const MAX_BYTES: usize = 1_000_000;
 
 struct Cached {
+    buf_uid: u64,
     lang: Language,
     revision: u64,
     tree: Tree,
@@ -43,7 +44,7 @@ impl SyntaxCache {
     /// Reparse if the cached entry doesn't match `buf`'s language/revision.
     fn refresh(&self, buf: &Buffer) {
         if let Some(c) = self.inner.borrow().as_ref() {
-            if c.lang == buf.language && c.revision == buf.revision {
+            if c.buf_uid == buf.uid && c.lang == buf.language && c.revision == buf.revision {
                 return;
             }
         }
@@ -88,5 +89,29 @@ fn parse(buf: &Buffer) -> Option<Cached> {
     let tree = parser.parse(source.as_bytes(), None)?;
     let rope = Rope::from_str(&source);
     let line_spans = build_spans(&tree, &tslang, &query, &source, &rope);
-    Some(Cached { lang: buf.language, revision: buf.revision, tree, rope, line_spans })
+    Some(Cached { buf_uid: buf.uid, lang: buf.language, revision: buf.revision, tree, rope, line_spans })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rust_buf(text: &str) -> Buffer {
+        let mut b = Buffer::empty();
+        b.rope = Rope::from_str(text);
+        b.language = Language::Rust;
+        b
+    }
+
+    #[test]
+    fn buffers_at_the_same_revision_do_not_share_highlights() {
+        let cache = SyntaxCache::new();
+        let a = rust_buf("fn main() {}");
+        let b = rust_buf("// just a comment");
+        assert_eq!(a.revision, b.revision);
+        let ha = format!("{:?}", cache.highlight(&a, 0));
+        let hb = format!("{:?}", cache.highlight(&b, 0));
+        assert_ne!(ha, hb);
+        assert_eq!(hb, format!("{:?}", SyntaxCache::new().highlight(&b, 0)));
+    }
 }
