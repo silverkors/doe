@@ -28,7 +28,9 @@ impl TrustStore {
         let dirs = std::fs::read_to_string(&path)
             .ok()
             .and_then(|t| toml::from_str::<TrustFile>(&t).ok())
-            .map(|f| f.dirs.into_iter().map(PathBuf::from).collect())
+            // Relative entries (from older versions) would match a folder of
+            // that name anywhere, or every folder for `""`; drop them.
+            .map(|f| f.dirs.into_iter().map(PathBuf::from).filter(|p| p.is_absolute()).collect())
             .unwrap_or_default();
         TrustStore { dirs, session: HashSet::new(), path }
     }
@@ -39,6 +41,9 @@ impl TrustStore {
 
     /// Persistently trust a folder (writes `trust.toml`).
     pub fn trust(&mut self, dir: PathBuf) {
+        if !dir.is_absolute() {
+            return;
+        }
         self.dirs.insert(dir);
         self.save();
     }
@@ -57,5 +62,24 @@ impl TrustStore {
         if let Ok(text) = toml::to_string(&TrustFile { dirs }) {
             let _ = std::fs::write(&self.path, text);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relative_entries_are_never_trusted() {
+        let dir = std::env::temp_dir().join(format!("doe-test-trust-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("trust.toml"), "dirs = [\"\", \"sub\"]\n").unwrap();
+        let mut t = TrustStore::load(&dir);
+        assert!(!t.is_trusted(Path::new("")));
+        assert!(!t.is_trusted(Path::new("sub")));
+        t.trust(PathBuf::from(""));
+        assert!(!t.is_trusted(Path::new("")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1723,11 +1723,17 @@ impl App {
 
     /// The folder of the active document (its parent, or cwd for an untitled
     /// buffer) — the trust granularity for running code.
+    /// The active document's folder as an absolute (canonical when possible)
+    /// path. Trust is keyed on it, so it must never be relative: a buffer
+    /// opened as `doe notes.md` has parent `""`, which would otherwise match
+    /// every folder.
     fn active_doc_dir(&self) -> Option<PathBuf> {
-        match self.active_buffer().path.as_ref() {
-            Some(p) => p.parent().map(|p| p.to_path_buf()),
-            None => std::env::current_dir().ok(),
-        }
+        let cwd = std::env::current_dir().ok()?;
+        let dir = match self.active_buffer().path.as_ref() {
+            Some(p) => cwd.join(p).parent()?.to_path_buf(),
+            None => cwd,
+        };
+        Some(dir.canonicalize().unwrap_or(dir))
     }
 
     /// Run document code at `scope`, gating on per-folder trust.
