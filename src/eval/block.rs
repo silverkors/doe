@@ -134,8 +134,12 @@ pub fn parse_blocks(lines: &[&str]) -> Vec<ParsedBlock> {
         while j < lines.len() && fence_len(lines[j]) < open {
             j += 1;
         }
-        let close = j.min(lines.len().saturating_sub(1));
-        let fence_close_line = if j < lines.len() { j } else { close };
+        if j >= lines.len() {
+            // Unclosed fence: everything after it is inside the block, and a
+            // runnable block without a closing fence has no place for output.
+            break;
+        }
+        let fence_close_line = j;
 
         if directives.run {
             let source = if i + 1 <= fence_close_line {
@@ -230,6 +234,12 @@ pub fn output_edit(rope: &ropey::Rope, blk: &ParsedBlock, region_text: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unclosed_runnable_fence_is_not_a_block() {
+        let lines = vec!["```lua run", "print(1)", "return 2"];
+        assert!(parse_blocks(&lines).is_empty());
+    }
 
     fn lines(s: &str) -> Vec<&str> {
         s.lines().collect()

@@ -1832,8 +1832,16 @@ impl App {
     /// Run the requested blocks and splice their output regions in one undo step.
     fn do_run(&mut self, scope: RunScope) {
         use crate::eval::block::{self, OutMode};
-        let text = self.active_buffer().rope.to_string();
-        let lines: Vec<&str> = text.lines().collect();
+        // Number lines exactly as the rope does (it also breaks on U+2028,
+        // NEL, …, which `str::lines` doesn't), since block line indices are
+        // applied back to the rope when splicing output.
+        let owned: Vec<String> = self
+            .active_buffer()
+            .rope
+            .lines()
+            .map(|l| l.to_string().trim_end_matches(['\n', '\r', '\u{2028}', '\u{2029}', '\u{85}', '\u{b}', '\u{c}']).to_string())
+            .collect();
+        let lines: Vec<&str> = owned.iter().map(String::as_str).collect();
         let cursor_line = {
             let b = self.active_buffer();
             b.pos_to_line_col(b.primary_cursor().head).0
@@ -2166,6 +2174,19 @@ mod tests {
         b.set_text(text);
         b.language = crate::syntax::Language::Markdown;
         app
+    }
+
+    #[test]
+    fn unicode_line_separator_does_not_misplace_output() {
+        let doc = "intro\u{2028}more\n```lua run\nreturn 1\n```\n<!-- doe:output -->\nold\n<!-- /doe:output -->\nkeep me\n";
+        let mut app = markdown_app(doc);
+        let dir = app.active_doc_dir().unwrap();
+        app.trust.trust_session(dir);
+        app.do_run(RunScope::Document);
+        assert_eq!(
+            app.active_buffer().rope.to_string(),
+            "intro\u{2028}more\n```lua run\nreturn 1\n```\n<!-- doe:output -->\n1\n<!-- /doe:output -->\nkeep me\n"
+        );
     }
 
     #[test]
