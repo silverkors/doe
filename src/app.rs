@@ -559,11 +559,10 @@ impl App {
 
         self.status_message.clear();
 
-        let chord = keymap::chord_string(&ev);
-        let name = chord
-            .as_deref()
-            .and_then(|c| self.config.keybindings.get(BINDING_CONTEXT, c))
-            .map(|s| s.to_string());
+        let lookup = |c: Option<String>| {
+            c.and_then(|c| self.config.keybindings.get(BINDING_CONTEXT, &c).map(|s| s.to_string()))
+        };
+        let name = lookup(keymap::chord_string(&ev)).or_else(|| lookup(keymap::fallback_chord(&ev)));
 
         match name {
             Some(name) => self.run_named(&name),
@@ -1542,7 +1541,9 @@ impl App {
         self.disk_warned = false;
         self.file_picker.record_open(&path);
         // If already open, just switch to it.
-        if let Some(i) = self.buffers.iter().position(|b| b.path.as_deref() == Some(path.as_path())) {
+        let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        let target = canon(&path);
+        if let Some(i) = self.buffers.iter().position(|b| b.path.as_deref().map(canon).as_ref() == Some(&target)) {
             self.active = i;
             self.top_line = 0;
             self.top_subrow = 0;
@@ -2104,6 +2105,17 @@ mod tests {
         }
         let app = App::new(cfg_in(&d), vec![]);
         assert_eq!(app.active_buffer().rope.to_string(), "a\n");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn opening_same_file_via_another_path_reuses_buffer() {
+        let (d, cfg) = sandbox("dup");
+        let a = d.join("a.md");
+        std::fs::write(&a, "x\n").unwrap();
+        let mut app = App::new(cfg, vec![d.join(".").join("a.md")]);
+        app.do_open(a.clone());
+        assert_eq!(app.buffers.len(), 1);
         let _ = std::fs::remove_dir_all(&d);
     }
 

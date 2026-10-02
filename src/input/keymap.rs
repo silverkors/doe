@@ -13,8 +13,10 @@ pub fn chord_string(ev: &KeyEvent) -> Option<String> {
     let alt = m.contains(KeyModifiers::ALT);
     let shift = m.contains(KeyModifiers::SHIFT);
 
-    // `allow_shift` is false for character keys because case is already encoded
-    // in the char itself; it is true for named keys (arrows, F-keys, …).
+    // For a plain character the case already encodes Shift, so `shift-` is
+    // only emitted alongside Ctrl/Alt (`ctrl-shift-o`). Terminals report that
+    // combo as either `O`+CONTROL or `o`+CONTROL|SHIFT; both map the same.
+    // Named keys (arrows, F-keys, …) always carry `shift-`.
     let (name, allow_shift) = match ev.code {
         KeyCode::Char(c) => {
             let s = match c {
@@ -23,7 +25,8 @@ pub fn chord_string(ev: &KeyEvent) -> Option<String> {
                 '/' => "slash".to_string(),
                 c => c.to_ascii_lowercase().to_string(),
             };
-            (s, false)
+            let shifted = (ctrl || alt) && (shift || c.is_ascii_uppercase());
+            return Some(build(ctrl, alt, shifted, &s));
         }
         KeyCode::Enter => ("enter".to_string(), true),
         KeyCode::Esc => ("esc".to_string(), true),
@@ -44,6 +47,10 @@ pub fn chord_string(ev: &KeyEvent) -> Option<String> {
         _ => return None,
     };
 
+    Some(build(ctrl, alt, shift && allow_shift, &name))
+}
+
+fn build(ctrl: bool, alt: bool, shift: bool, name: &str) -> String {
     let mut out = String::new();
     if ctrl {
         out.push_str("ctrl-");
@@ -51,11 +58,54 @@ pub fn chord_string(ev: &KeyEvent) -> Option<String> {
     if alt {
         out.push_str("alt-");
     }
-    if shift && allow_shift {
+    if shift {
         out.push_str("shift-");
     }
-    out.push_str(&name);
-    Some(out)
+    out.push_str(name);
+    out
+}
+
+/// The chord to try when `chord_string` has no binding: a Ctrl/Alt+Shift+letter
+/// falls back to its unshifted form, so an unbound `ctrl-shift-z` still acts
+/// like `ctrl-z` (as it did before Shift was distinguished on letters).
+pub fn fallback_chord(ev: &KeyEvent) -> Option<String> {
+    let chord = chord_string(ev)?;
+    match ev.code {
+        KeyCode::Char(_) if chord.contains("shift-") => Some(chord.replacen("shift-", "", 1)),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chord(code: KeyCode, m: KeyModifiers) -> Option<String> {
+        chord_string(&KeyEvent::new(code, m))
+    }
+
+    #[test]
+    fn ctrl_shift_letter_keeps_shift() {
+        let cs = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        assert_eq!(chord(KeyCode::Char('O'), cs).as_deref(), Some("ctrl-shift-o"));
+        assert_eq!(chord(KeyCode::Char('o'), cs).as_deref(), Some("ctrl-shift-o"));
+        assert_eq!(chord(KeyCode::Char('O'), KeyModifiers::CONTROL).as_deref(), Some("ctrl-shift-o"));
+        assert_eq!(chord(KeyCode::Char('o'), KeyModifiers::CONTROL).as_deref(), Some("ctrl-o"));
+    }
+
+    #[test]
+    fn plain_shifted_letter_has_no_shift_prefix() {
+        assert_eq!(chord(KeyCode::Char('A'), KeyModifiers::SHIFT).as_deref(), Some("a"));
+        assert_eq!(chord(KeyCode::Up, KeyModifiers::SHIFT).as_deref(), Some("shift-up"));
+    }
+
+    #[test]
+    fn fallback_drops_shift_only_for_letters() {
+        let ev = KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        assert_eq!(fallback_chord(&ev).as_deref(), Some("ctrl-z"));
+        let ev = KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT);
+        assert_eq!(fallback_chord(&ev), None);
+    }
 }
 
 /// If this event is a plain printable character (no ctrl/alt), return it for

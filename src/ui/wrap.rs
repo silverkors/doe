@@ -86,7 +86,10 @@ pub fn pos_at(buf: &Buffer, line: usize, subrow: usize, col: usize, width: usize
     let sub = subrow.min(segs.len() - 1);
     let (s, e) = segs[sub];
     let target = buf.display_col(line, s) + col;
-    let off = buf.char_off_for_col(line, target).clamp(s, e);
+    // `e` of a non-final segment is the first char of the next row; stop one
+    // short so clicking (or moving) past a wrapped row's end stays on it.
+    let last = if sub + 1 < segs.len() && e > s { e - 1 } else { e };
+    let off = buf.char_off_for_col(line, target).clamp(s, last);
     buf.rope.line_to_char(line) + off
 }
 
@@ -122,6 +125,17 @@ mod tests {
         let mut b = Buffer::empty();
         b.rope = Rope::from_str(s);
         b
+    }
+
+    #[test]
+    fn click_past_wrapped_row_end_stays_on_that_row() {
+        let b = buf("hello world foo");
+        let pos = pos_at(&b, 0, 0, 7, 8);
+        assert_eq!(vpos_of(&b, pos, 8).1, 0, "landed on the next visual row");
+        // The last row still allows the true end of line.
+        let segs = segments(&b, 0, 8);
+        let last = segs.len() - 1;
+        assert_eq!(pos_at(&b, 0, last, 99, 8), b.len_chars());
     }
 
     #[test]
